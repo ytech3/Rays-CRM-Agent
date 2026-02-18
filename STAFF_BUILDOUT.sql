@@ -24,36 +24,27 @@ Enable accurate performance comparisons within each department:
 -- STEP 1: CREATE DEPARTMENT MAPPING TABLE FOR TICKET TEAM
 -- =============================================================================
 
-CREATE OR REPLACE TABLE TBRDP_DW_PROD.IM_RPT.T_TICKET_TEAM_DEPARTMENT_MAPPING
-COMMENT = 'Department classification for ticket sales vs service team segmentation'
-AS
-SELECT 
-    user_id,
-    user_name,
-    department,
-    team,
-    CURRENT_TIMESTAMP() AS classification_date,
-    'MANUAL_INITIAL_CLASSIFICATION' AS classification_source
+CREATE OR REPLACE TABLE TBRDP_DW_PROD.IM_RPT.T_TICKET_TEAM_DEPARTMENT_MAPPING AS
+SELECT user_id, user_name, department, team, 
+       CURRENT_TIMESTAMP() AS classification_date, 
+       'Manual Classification - Feb 2026' AS classification_source
 FROM (
     -- =============================================================================
-    -- TICKET SALES REPRESENTATIVES (8 total)
+    -- TICKET SALES GROUP ACCOUNT EXECUTIVES (7 total)
     -- =============================================================================
-    SELECT '005cw000001aoaPAAQ' AS user_id, 'Rafael Lazala' AS user_name, 'TICKET_SALES' AS department, 'Ticket Sales' AS team
+    SELECT '005cw000001aoaPAAQ' AS user_id, 'Rafael Lazala' AS user_name, 'TICKET_SALES' AS department, 'Ticket Sales Group Account Executives' AS team
     UNION ALL
-    SELECT '005cw000002URuTAAW', 'Brock Shively', 'TICKET_SALES', 'Ticket Sales'
+    SELECT '005cw000002URuTAAW', 'Brock Shively', 'TICKET_SALES', 'Ticket Sales Group Account Executives'
     UNION ALL
-    SELECT '005cw000003XvozAAC', 'Colin McGlinchey', 'TICKET_SALES', 'Ticket Sales'
+    SELECT '005cw000003XvozAAC', 'Colin McGlinchey', 'TICKET_SALES', 'Ticket Sales Group Account Executives'
     UNION ALL
-    SELECT '005cw000002URsrAAG', 'Jordan Beech', 'TICKET_SALES', 'Ticket Sales'
+    SELECT '005cw000002URsrAAG', 'Jordan Beech', 'TICKET_SALES', 'Ticket Sales Group Account Executives'
     UNION ALL
-    SELECT '005cw000003XvllAAC', 'Chase Pittman', 'TICKET_SALES', 'Ticket Sales'
+    SELECT '005cw000001cB1tAAE', 'Tate Anderson', 'TICKET_SALES', 'Ticket Sales Group Account Executives'
     UNION ALL
-    SELECT '005cw000001cB1tAAE', 'Tate Anderson', 'TICKET_SALES', 'Ticket Sales'
+    SELECT '005cw000001c9bCAAQ', 'Brandon Harnick', 'TICKET_SALES', 'Ticket Sales Group Account Executives'
     UNION ALL
-    SELECT '005cw000001c9bCAAQ', 'Brandon Harnick', 'TICKET_SALES', 'Ticket Sales'
-    UNION ALL
-    SELECT '005cw000001c8GxAAI', 'Lindsay Auld', 'TICKET_SALES', 'Ticket Sales'
-    
+    SELECT '005cw000001c8GxAAI', 'Lindsay Auld', 'TICKET_SALES', 'Ticket Sales Group Account Executives'
     -- =============================================================================
     -- TICKET SERVICE REPRESENTATIVES (4 total)
     -- =============================================================================
@@ -65,7 +56,41 @@ FROM (
     SELECT '005cw000001cAx3AAE', 'Steven Long', 'TICKET_SERVICE', 'Ticket Service'
     UNION ALL
     SELECT '005cw000001cB9xAAE', 'Zach Grundt', 'TICKET_SERVICE', 'Ticket Service'
+    -- =============================================================================
+    -- TICKET SEASON MEMBER ACCOUNT EXECUTIVES (2 total)
+    -- =============================================================================
+    UNION ALL
+    SELECT '005cw000005SFqrAAG', 'Eric Yalowitz', 'TICKET_MEMBER_AE', 'Ticket Account Executive'
+    UNION ALL
+    SELECT '005cw000005SFm1AAG', 'Madison Jones', 'TICKET_MEMBER_AE', 'Ticket Account Executive'
+    -- =============================================================================
+    -- TICKET SALES REPRESENTATIVES / TSRs (4 total)
+    -- =============================================================================
+    UNION ALL
+    SELECT '005cw000005SFyvAAG', 'Alexa Linchuck', 'TICKET_TSR', 'Ticket Sales Representative'
+    UNION ALL
+    SELECT '005cw000005SG0XAAW', 'Benjamin Knee', 'TICKET_TSR', 'Ticket Sales Representative'
+    UNION ALL
+    SELECT '005cw000005SG5NAAW', 'Emily Prindiville', 'TICKET_TSR', 'Ticket Sales Representative'
+    UNION ALL
+    SELECT '005cw000005SJJNAA4', 'Torrey Pursel', 'TICKET_TSR', 'Ticket Sales Representative'
+    -- =============================================================================
+    -- CORPORATE PARTNERSHIP SALES (6 total)
+    -- =============================================================================
+    UNION ALL
+    SELECT '005cw000001SUsDAAW', 'John Pope', 'CORPORATE_PARTNERSHIP_SALES', 'CP Sales'
+    UNION ALL
+    SELECT '005cw000001c96XAAQ', 'Jazzmine McDonald', 'CORPORATE_PARTNERSHIP_SALES', 'CP Sales'
+    UNION ALL
+    SELECT '005cw000001SV57AAG', 'Ifadare Ogunleye', 'CORPORATE_PARTNERSHIP_SALES', 'CP Sales'
+    UNION ALL
+    SELECT '005cw000001SV9xAAG', 'Michael Lee', 'CORPORATE_PARTNERSHIP_SALES', 'CP Sales'
+    UNION ALL
+    SELECT '005cw000001c8iMAAQ', 'Daniel Schonborn', 'CORPORATE_PARTNERSHIP_SALES', 'CP Sales'
+    UNION ALL
+    SELECT '005cw000001c9XxAAI', 'Stephen Lanier', 'CORPORATE_PARTNERSHIP_SALES', 'CP Sales'
 );
+
 
 -- =============================================================================
 -- STEP 2: VERIFY THE MAPPING
