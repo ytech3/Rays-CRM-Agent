@@ -1,28 +1,31 @@
-create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
+CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 	tables (
 		OPPORTUNITIES as TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY primary key (ID) with synonyms=('deals','pipeline','sales opportunities') comment='Sales opportunities with revenue, stage, and close dates',
 		DEAL_HEALTH as TBRDP_DW_PROD.IM_RPT.T_DEAL_HEALTH_SCORE primary key (OPPORTUNITY_ID) with synonyms=('health scores','deal assessment') comment='AI-generated health scores and risk assessments for opportunities',
 		ACTIVITY_METRICS as TBRDP_DW_PROD.IM_RPT.T_OPPORTUNITY_ACTIVITY_METRICS primary key (OPPORTUNITY_ID) with synonyms=('engagement','activities','interactions') comment='Aggregated email, call, and task metrics per opportunity',
 		USERS as TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_USER primary key (ID) with synonyms=('sales reps','account executives','owners') comment='Sales representative details and team information',
-		TICKET_TEAM_DEPT as TBRDP_DW_PROD.IM_RPT.T_TICKET_TEAM_DEPARTMENT_MAPPING primary key (USER_ID) with synonyms=('ticket team','department classification','ticket sales vs service') comment='Department classification for ticket sales (8 reps) vs ticket service (4 reps) teams',
-		CUSTOMER_360 as TBRDP_DW_PROD.IM_RPT.T_CUSTOMER_360 primary key (SF_ACCOUNT_ID) with synonyms=('customer intelligence','customer 360','customer profile','customer data','account intelligence','lifetime value','LTV','customer lifetime') comment='Unified customer view linking CRM opportunities to actual ticket purchases. Contains lifetime value, revenue tiers, conversion metrics, churn risk, and purchase history for 371K mapped customers.'
+		TICKET_TEAM_DEPT as TBRDP_DW_PROD.IM_RPT.T_TICKET_TEAM_DEPARTMENT_MAPPING primary key (USER_ID) with synonyms=('ticket team','department classification','sales vs service','group AEs','SM AEs','TSRs','corporate partnerships') comment='Department classification for 23 reps across 5 teams: Ticket Sales Group AEs (7), Ticket Service (4), Ticket Member AEs (2), Ticket Sales Reps/TSRs (4), and Corporate Partnership Sales (6)',
+		CUSTOMER_360 as TBRDP_DW_PROD.IM_RPT.T_CUSTOMER_360 primary key (SF_ACCOUNT_ID) with synonyms=('customer intelligence','customer 360','customer profile','customer data','account intelligence','lifetime value','LTV','customer lifetime') comment='Unified customer view linking CRM opportunities to actual ticket purchases. Contains lifetime value, revenue tiers, conversion metrics, churn risk, and purchase history for 371K mapped customers.',
+		EMAIL_ANALYTICS as TBRDP_DW_PROD.IM_RPT.T_EMAIL_ANALYTICS primary key (EMAIL_ID) with synonyms=('emails','email activity','email metrics','email volume','outreach','communications','response times') comment='Individual email records with timestamps, direction, rep attribution, sentiment, response time calculations, and time-of-day analysis. Use for email volume counts, send time optimization, and response rate analysis.'
 	)
 	relationships (
 		OPPORTUNITIES_TO_ACTIVITY as OPPORTUNITIES(ID) references ACTIVITY_METRICS(OPPORTUNITY_ID),
 		OPPORTUNITIES_TO_CUSTOMER as OPPORTUNITIES(ACCOUNT_ID) references CUSTOMER_360(SF_ACCOUNT_ID),
 		OPPORTUNITIES_TO_HEALTH as OPPORTUNITIES(ID) references DEAL_HEALTH(OPPORTUNITY_ID),
 		OPPORTUNITIES_TO_OWNER as OPPORTUNITIES(OWNER_ID) references USERS(ID),
-		USERS_TO_TICKET_DEPT as USERS(ID) references TICKET_TEAM_DEPT(USER_ID)
+		USERS_TO_TICKET_DEPT as USERS(ID) references TICKET_TEAM_DEPT(USER_ID),
+		EMAILS_TO_OPPORTUNITY as EMAIL_ANALYTICS(OPPORTUNITY_ID) references OPPORTUNITIES(ID),
+		EMAILS_TO_REP as EMAIL_ANALYTICS(REP_USER_ID) references USERS(ID)
 	)
 	facts (
 		OPPORTUNITIES.DEAL_AMOUNT as opportunities.AMOUNT comment='Revenue amount of the opportunity',
 		OPPORTUNITIES.WEIGHTED_AMOUNT as opportunities.AMOUNT * (opportunities.PROBABILITY / 100) comment='Probability-weighted revenue (amount x probability)',
 		OPPORTUNITIES.PROBABILITY_PCT as opportunities.PROBABILITY comment='Win probability percentage (0-100)',
-		DEAL_HEALTH.HEALTH_SCORE_VALUE as deal_health.health_score comment='AI-calculated health score (0-100)',
-		ACTIVITY_METRICS.TOTAL_EMAILS_COUNT as activity_metrics.total_emails comment='Total email count for this opportunity',
-		ACTIVITY_METRICS.TOTAL_CALLS_COUNT as activity_metrics.total_calls comment='Total call count for this opportunity',
-		ACTIVITY_METRICS.DAYS_SINCE_CONTACT as activity_metrics.days_since_last_email comment='Number of days since last email contact',
-		ACTIVITY_METRICS.AVG_SENTIMENT_SCORE as activity_metrics.avg_email_sentiment comment='Average email sentiment score (-1 to 1)',
+		DEAL_HEALTH.HEALTH_SCORE_VALUE as deal_health.HEALTH_SCORE comment='AI-calculated health score (0-100)',
+		ACTIVITY_METRICS.TOTAL_EMAILS_COUNT as activity_metrics.TOTAL_EMAILS comment='Total email count for this opportunity',
+		ACTIVITY_METRICS.TOTAL_CALLS_COUNT as activity_metrics.TOTAL_CALLS comment='Total call count for this opportunity',
+		ACTIVITY_METRICS.DAYS_SINCE_CONTACT as activity_metrics.DAYS_SINCE_LAST_EMAIL comment='Number of days since last email contact',
+		ACTIVITY_METRICS.AVG_SENTIMENT_SCORE as activity_metrics.AVG_EMAIL_SENTIMENT comment='Average email sentiment score (-1 to 1)',
 		CUSTOMER_360.CUST_TICKET_REV as customer_360.TOTAL_TICKET_REVENUE comment='Total actual ticket purchase revenue for this customer across all seasons',
 		CUSTOMER_360.CUST_CRM_WON_REV as customer_360.CRM_WON_REVENUE comment='Total CRM opportunity won revenue for this customer',
 		CUSTOMER_360.CUST_LTV as customer_360.ESTIMATED_LIFETIME_VALUE comment='Estimated customer lifetime value (greater of CRM won or ticket revenue)',
@@ -38,7 +41,9 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CUSTOMER_360.CUST_FLEX_REV as customer_360.FLEX_SEASON_REVENUE comment='Revenue from Flex Season ticket purchases',
 		CUSTOMER_360.CUST_SPONSOR_REV as customer_360.SPONSOR_REVENUE comment='Revenue from Sponsor ticket purchases',
 		CUSTOMER_360.CUST_CONVERSION_DAYS as customer_360.DAYS_OPP_TO_FIRST_PURCHASE comment='Number of days from first CRM opportunity to first actual ticket purchase',
-		CUSTOMER_360.CUST_SEASONS_COUNT as customer_360.SEASONS_PURCHASED comment='Number of different seasons the customer purchased tickets for'
+		CUSTOMER_360.CUST_SEASONS_COUNT as customer_360.SEASONS_PURCHASED comment='Number of different seasons the customer purchased tickets for',
+		EMAIL_ANALYTICS.EMAIL_SENTIMENT as email_analytics.SENTIMENT_SCORE comment='Sentiment score for this individual email (-1 to 1)',
+		EMAIL_ANALYTICS.EMAIL_RESPONSE_MINUTES as email_analytics.RESPONSE_MINUTES comment='Minutes until first inbound response to this outbound email. NULL if no response within 30 days.'
 	)
 	dimensions (
 		OPPORTUNITIES.OPP_NAME as opportunities.NAME with synonyms=('opportunity name','deal name') comment='Name of the sales opportunity',
@@ -46,19 +51,22 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		OPPORTUNITIES.CLOSE_DATE as opportunities.CLOSE_DATE with synonyms=('expected close','close date') comment='Expected close date for the opportunity',
 		OPPORTUNITIES.CLOSE_MONTH as DATE_TRUNC('MONTH', opportunities.CLOSE_DATE) with synonyms=('closing month') comment='Month when the opportunity is expected to close',
 		OPPORTUNITIES.CLOSE_QUARTER as DATE_TRUNC('QUARTER', opportunities.CLOSE_DATE) with synonyms=('closing quarter') comment='Quarter when the opportunity is expected to close',
+		OPPORTUNITIES.CREATED_DATE as opportunities.CREATED_DATE with synonyms=('creation date','opened date','opportunity created','date created') comment='Date when the opportunity was first created in Salesforce',
+		OPPORTUNITIES.CREATED_MONTH as DATE_TRUNC('MONTH', opportunities.CREATED_DATE) with synonyms=('creation month','opened month') comment='Month when the opportunity was created',
+		OPPORTUNITIES.CREATED_QUARTER as DATE_TRUNC('QUARTER', opportunities.CREATED_DATE) with synonyms=('creation quarter','opened quarter') comment='Quarter when the opportunity was created',
 		OPPORTUNITIES.IS_CLOSED as opportunities.IS_CLOSED with synonyms=('closed status') comment='Whether the opportunity is closed (won or lost)',
 		OPPORTUNITIES.IS_WON as opportunities.IS_WON with synonyms=('won status') comment='Whether the opportunity was won',
-		DEAL_HEALTH.HEALTH_CATEGORY as deal_health.health_category with synonyms=('health status','deal health','risk level') comment='Health category: Healthy, At Risk, or Critical',
-		DEAL_HEALTH.IS_AT_RISK as (deal_health.health_category IN ('At Risk', 'Critical')) with synonyms=('at risk flag','risky deals') comment='Boolean flag for at-risk opportunities',
-		ACTIVITY_METRICS.ENGAGEMENT_LEVEL as activity_metrics.engagement_level with synonyms=('activity level','engagement score') comment='Engagement level: High, Medium, or Low',
-		ACTIVITY_METRICS.HAS_SENTIMENT_RISK as activity_metrics.has_sentiment_risk with synonyms=('negative sentiment flag','sentiment risk') comment='Whether the opportunity has negative email sentiment (risk indicator)',
-		ACTIVITY_METRICS.IS_GHOSTED_FLAG as activity_metrics.is_ghosted with synonyms=('ghosted status','no recent contact') comment='Whether opportunity has had no contact for 60+ days',
+		DEAL_HEALTH.HEALTH_CATEGORY as deal_health.HEALTH_CATEGORY with synonyms=('health status','deal health','risk level') comment='Health category: Healthy, At Risk, or Critical',
+		DEAL_HEALTH.IS_AT_RISK as (deal_health.HEALTH_CATEGORY IN ('At Risk', 'Critical')) with synonyms=('at risk flag','risky deals') comment='Boolean flag for at-risk opportunities',
+		ACTIVITY_METRICS.ENGAGEMENT_LEVEL as activity_metrics.ENGAGEMENT_LEVEL with synonyms=('activity level','engagement score') comment='Engagement level: High, Medium, or Low',
+		ACTIVITY_METRICS.HAS_SENTIMENT_RISK as activity_metrics.HAS_SENTIMENT_RISK with synonyms=('negative sentiment flag','sentiment risk') comment='Whether the opportunity has negative email sentiment (risk indicator)',
+		ACTIVITY_METRICS.IS_GHOSTED_FLAG as activity_metrics.IS_GHOSTED with synonyms=('ghosted status','no recent contact') comment='Whether opportunity has had no contact for 60+ days',
 		USERS.REP_NAME as users.NAME with synonyms=('sales rep','account executive','owner name') comment='Name of the sales representative',
 		USERS.REP_EMAIL as users.EMAIL with synonyms=('owner email') comment='Email address of the sales representative',
 		USERS.IS_ACTIVE as users.IS_ACTIVE with synonyms=('active rep','active user') comment='Whether the sales rep is currently active',
-		TICKET_TEAM_DEPT.TICKET_DEPARTMENT as ticket_team_dept.department with synonyms=('department','team type','sales vs service') comment='Department classification: TICKET_SALES or TICKET_SERVICE',
-		TICKET_TEAM_DEPT.TICKET_TEAM as ticket_team_dept.TEAM with synonyms=('team name','ticket team name') comment='Ticket team display name: Ticket Sales or Ticket Service',
-		TICKET_TEAM_DEPT.TICKET_REP_NAME as ticket_team_dept.USER_NAME with synonyms=('department rep name') comment='Sales or service rep name from department classification',
+		TICKET_TEAM_DEPT.TICKET_DEPARTMENT as ticket_team_dept.DEPARTMENT with synonyms=('department','team type','sales vs service','group AEs','member AEs','TSRs','corporate partnerships') comment='Department code: TICKET_SALES (Group AEs), TICKET_SERVICE (Service Reps), TICKET_MEMBER_AE (Season Member AEs), TICKET_TSR (Ticket Sales Reps), CORPORATE_PARTNERSHIP_SALES (CP Sales)',
+		TICKET_TEAM_DEPT.TICKET_TEAM as ticket_team_dept.TEAM with synonyms=('team name','ticket team name','group name') comment='Team display name: Ticket Sales Group Account Executives, Ticket Service, Ticket Account Executive, Ticket Sales Representative, or CP Sales',
+		TICKET_TEAM_DEPT.TICKET_REP_NAME as ticket_team_dept.USER_NAME with synonyms=('department rep name','classified rep name') comment='Sales or service rep name from department classification',
 		CUSTOMER_360.ACCOUNT_NAME as customer_360.SF_ACCOUNT_NAME with synonyms=('customer name','account name','patron name','client name') comment='Salesforce account name for the customer',
 		CUSTOMER_360.CUSTOMER_SEGMENT as customer_360.CUSTOMER_SEGMENT with synonyms=('customer type','segment','customer classification') comment='Customer segment: CRM + Purchaser, CRM Only, Direct Purchaser, or Prospect.',
 		CUSTOMER_360.REVENUE_TIER as customer_360.REVENUE_TIER with synonyms=('value tier','customer tier','revenue level','customer value') comment='Revenue tier based on total ticket purchases: Platinum, Gold, Silver, Bronze, No Revenue',
@@ -72,9 +80,17 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CUSTOMER_360.PERSON_ACCOUNT as customer_360.IS_PERSON_ACCOUNT with synonyms=('person account','individual','person vs business') comment='Whether this is a person account vs business account',
 		CUSTOMER_360.ACCOUNT_BILLING_CITY as customer_360.BILLING_CITY with synonyms=('city','customer city') comment='Billing city of the customer account',
 		CUSTOMER_360.ACCOUNT_BILLING_STATE as customer_360.BILLING_STATE with synonyms=('state','customer state') comment='Billing state of the customer account',
-		OPPORTUNITIES.CREATED_DATE as opportunities.CREATED_DATE with synonyms=('creation date','opened date','opportunity created','date created') comment='Date when the opportunity was first created in Salesforce',
-		OPPORTUNITIES.CREATED_MONTH as DATE_TRUNC('MONTH', opportunities.CREATED_DATE) with synonyms=('creation month','opened month') comment='Month when the opportunity was created',
-		OPPORTUNITIES.CREATED_QUARTER as DATE_TRUNC('QUARTER', opportunities.CREATED_DATE) with synonyms=('creation quarter','opened quarter') comment='Quarter when the opportunity was created'
+		EMAIL_ANALYTICS.EMAIL_SEND_DATE as email_analytics.EMAIL_DATE with synonyms=('email date','send date','message date') comment='Date the email was sent or received',
+		EMAIL_ANALYTICS.EMAIL_TIMESTAMP as email_analytics.MESSAGE_DATE with synonyms=('email timestamp','exact send time') comment='Exact timestamp when email was sent or received',
+		EMAIL_ANALYTICS.EMAIL_DIR as email_analytics.EMAIL_DIRECTION with synonyms=('inbound outbound','email type','sent or received') comment='Whether the email was Inbound (received) or Outbound (sent by rep)',
+		EMAIL_ANALYTICS.EMAIL_DAY as email_analytics.EMAIL_DAY_NAME with synonyms=('day of week','weekday') comment='Day of week the email was sent (Monday through Sunday)',
+		EMAIL_ANALYTICS.EMAIL_HOUR_OF_DAY as email_analytics.EMAIL_HOUR with synonyms=('hour sent','time sent','hour of day') comment='Hour of day (0-23) when the email was sent',
+		EMAIL_ANALYTICS.EMAIL_TIME_BUCKET as email_analytics.TIME_OF_DAY_BUCKET with synonyms=('time of day','send time window','outreach time') comment='Time of day bucket: Early Morning (6-9am), Morning (9am-12pm), Lunch (12-2pm), Afternoon (2-5pm), Evening (5-8pm), Off Hours',
+		EMAIL_ANALYTICS.EMAIL_RESPONSE_BUCKET as email_analytics.RESPONSE_TIME_BUCKET with synonyms=('response speed','reply time','how fast responded') comment='Response time category: Within 1 Hour, Within 4 Hours, Within 24 Hours, Within 3 Days, Over 3 Days, No Response',
+		EMAIL_ANALYTICS.EMAIL_REP as email_analytics.REP_NAME with synonyms=('email sender','who sent','emailing rep') comment='Name of the rep associated with this email (sender for outbound, opportunity owner for inbound)',
+		EMAIL_ANALYTICS.EMAIL_SENT_CATEGORY as email_analytics.SENTIMENT_CATEGORY with synonyms=('email tone','email sentiment') comment='Sentiment category of this email: Positive, Neutral, Slightly Negative, or Negative',
+		EMAIL_ANALYTICS.EMAIL_OPP_NAME as email_analytics.OPPORTUNITY_NAME with synonyms=('related opportunity','email opportunity') comment='Name of the opportunity this email is associated with',
+		EMAIL_ANALYTICS.EMAIL_SUBJECT as email_analytics.SUBJECT with synonyms=('email subject','subject line') comment='Subject line of the email'
 	)
 	metrics (
 		OPPORTUNITIES.TOTAL_PIPELINE_VALUE as SUM(opportunities.deal_amount) comment='Total value of all opportunities in the pipeline',
@@ -84,10 +100,16 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		OPPORTUNITIES.WON_COUNT as SUM(CASE WHEN opportunities.IS_WON = TRUE THEN 1 ELSE 0 END) comment='Number of won opportunities',
 		OPPORTUNITIES.LOST_COUNT as SUM(CASE WHEN opportunities.IS_CLOSED = TRUE AND opportunities.IS_WON = FALSE THEN 1 ELSE 0 END) comment='Number of lost opportunities',
 		OPPORTUNITIES.WIN_RATE_PCT as (SUM(CASE WHEN opportunities.IS_WON = TRUE THEN 1 ELSE 0 END) * 100.0) / NULLIF(SUM(CASE WHEN opportunities.IS_CLOSED = TRUE THEN 1 ELSE 0 END), 0) comment='Win rate percentage',
-		OPPORTUNITIES.TICKET_SALES_PIPELINE as SUM(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_SALES' THEN opportunities.deal_amount ELSE 0 END) with synonyms=('ticket sales revenue','sales team pipeline','ticket sales total') comment='Total pipeline value for TICKET_SALES department',
-		OPPORTUNITIES.TICKET_SERVICE_PIPELINE as SUM(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_SERVICE' THEN opportunities.deal_amount ELSE 0 END) with synonyms=('ticket service revenue','service team pipeline','ticket service total') comment='Total pipeline value for TICKET_SERVICE department',
-		OPPORTUNITIES.TICKET_SALES_COUNT as COUNT(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_SALES' THEN 1 END) with synonyms=('ticket sales opportunities','sales team deals') comment='Number of opportunities owned by TICKET_SALES reps',
-		OPPORTUNITIES.TICKET_SERVICE_COUNT as COUNT(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_SERVICE' THEN 1 END) with synonyms=('ticket service opportunities','service team deals') comment='Number of opportunities owned by TICKET_SERVICE reps',
+		OPPORTUNITIES.TICKET_SALES_PIPELINE as SUM(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_SALES' THEN opportunities.deal_amount ELSE 0 END) with synonyms=('group AE pipeline','group AE revenue','ticket sales total') comment='Total pipeline value for Ticket Sales Group AEs',
+		OPPORTUNITIES.TICKET_SERVICE_PIPELINE as SUM(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_SERVICE' THEN opportunities.deal_amount ELSE 0 END) with synonyms=('service pipeline','service team pipeline','ticket service total') comment='Total pipeline value for Ticket Service department',
+		OPPORTUNITIES.TICKET_SALES_COUNT as COUNT(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_SALES' THEN 1 END) with synonyms=('group AE opportunities','group AE deals') comment='Number of opportunities owned by Ticket Sales Group AEs',
+		OPPORTUNITIES.TICKET_SERVICE_COUNT as COUNT(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_SERVICE' THEN 1 END) with synonyms=('service opportunities','service team deals') comment='Number of opportunities owned by Ticket Service reps',
+		OPPORTUNITIES.MEMBER_AE_PIPELINE as SUM(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_MEMBER_AE' THEN opportunities.deal_amount ELSE 0 END) with synonyms=('member AE pipeline','season member pipeline','SM AE revenue') comment='Total pipeline value for Ticket Member AEs (Season Membership)',
+		OPPORTUNITIES.MEMBER_AE_COUNT as COUNT(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_MEMBER_AE' THEN 1 END) with synonyms=('member AE opportunities','SM AE deals') comment='Number of opportunities owned by Ticket Member AEs',
+		OPPORTUNITIES.TSR_PIPELINE as SUM(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_TSR' THEN opportunities.deal_amount ELSE 0 END) with synonyms=('TSR pipeline','ticket sales rep pipeline','TSR revenue') comment='Total pipeline value for Ticket Sales Representatives (TSRs)',
+		OPPORTUNITIES.TSR_COUNT as COUNT(CASE WHEN ticket_team_dept.ticket_department = 'TICKET_TSR' THEN 1 END) with synonyms=('TSR opportunities','TSR deals') comment='Number of opportunities owned by TSRs',
+		OPPORTUNITIES.CP_SALES_PIPELINE as SUM(CASE WHEN ticket_team_dept.ticket_department = 'CORPORATE_PARTNERSHIP_SALES' THEN opportunities.deal_amount ELSE 0 END) with synonyms=('corporate partnership pipeline','CP pipeline','sponsorship pipeline') comment='Total pipeline value for Corporate Partnership Sales',
+		OPPORTUNITIES.CP_SALES_COUNT as COUNT(CASE WHEN ticket_team_dept.ticket_department = 'CORPORATE_PARTNERSHIP_SALES' THEN 1 END) with synonyms=('CP opportunities','corporate partnership deals','sponsorship deals') comment='Number of opportunities owned by Corporate Partnership Sales',
 		DEAL_HEALTH.AVERAGE_HEALTH_SCORE as AVG(deal_health.health_score_value) comment='Average health score across opportunities',
 		DEAL_HEALTH.AT_RISK_COUNT as COUNT(CASE WHEN deal_health.is_at_risk = TRUE THEN 1 END) comment='Count of at-risk or critical opportunities',
 		DEAL_HEALTH.AT_RISK_VALUE as SUM(CASE WHEN deal_health.is_at_risk = TRUE THEN opportunities.deal_amount ELSE 0 END) comment='Total pipeline value of at-risk opportunities',
@@ -108,27 +130,48 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CUSTOMER_360.AGG_SEASON_TIX_REVENUE as SUM(customer_360.cust_season_tix_rev) with synonyms=('season ticket total','traditional season revenue','total season ticket revenue') comment='Total revenue from Traditional Season ticket purchases across all customers',
 		CUSTOMER_360.AGG_SINGLE_GAME_REVENUE as SUM(customer_360.cust_single_game_rev) with synonyms=('single game total','individual game revenue','total single game revenue') comment='Total revenue from Single Game ticket purchases across all customers',
 		CUSTOMER_360.AGG_SUITE_REVENUE as SUM(customer_360.cust_suite_rev) with synonyms=('suite total','premium seating revenue','total suite revenue') comment='Total revenue from Suite ticket purchases across all customers',
-		CUSTOMER_360.AGG_GROUP_REVENUE as SUM(customer_360.cust_group_rev) with synonyms=('group sales total','group ticket revenue','total group revenue') comment='Total revenue from Group ticket purchases across all customers'
+		CUSTOMER_360.AGG_GROUP_REVENUE as SUM(customer_360.cust_group_rev) with synonyms=('group sales total','group ticket revenue','total group revenue') comment='Total revenue from Group ticket purchases across all customers',
+		EMAIL_ANALYTICS.TOTAL_EMAILS_SENT as COUNT(CASE WHEN email_analytics.email_dir = 'Outbound' THEN 1 END) with synonyms=('emails sent','outbound emails','outgoing email count') comment='Total number of outbound emails sent by reps',
+		EMAIL_ANALYTICS.TOTAL_EMAILS_RECEIVED as COUNT(CASE WHEN email_analytics.email_dir = 'Inbound' THEN 1 END) with synonyms=('emails received','inbound emails','incoming email count') comment='Total number of inbound emails received',
+		EMAIL_ANALYTICS.TOTAL_EMAIL_COUNT as COUNT(email_analytics.EMAIL_ID) with synonyms=('total emails','all emails','email count') comment='Total number of all emails (inbound + outbound)',
+		EMAIL_ANALYTICS.AVG_RESPONSE_MINUTES as AVG(email_analytics.email_response_minutes) with synonyms=('average response time','mean response time','avg reply time') comment='Average response time in minutes for outbound emails that received a reply within 30 days',
+		EMAIL_ANALYTICS.MEDIAN_RESPONSE_MINUTES as MEDIAN(email_analytics.email_response_minutes) with synonyms=('median response time','typical response time') comment='Median response time in minutes — more representative than average as it ignores outliers',
+		EMAIL_ANALYTICS.RESPONSE_RATE as (COUNT(CASE WHEN email_analytics.email_response_bucket != 'No Response' AND email_analytics.email_dir = 'Outbound' THEN 1 END) * 100.0) / NULLIF(COUNT(CASE WHEN email_analytics.email_dir = 'Outbound' THEN 1 END), 0) with synonyms=('reply rate','email response rate','response percentage') comment='Percentage of outbound emails that received a response within 30 days'
 	)
-	comment='Semantic view for CRM sales intelligence with Customer 360 - enables natural language queries about pipeline, deal health, rep performance, customer lifetime value, ticket purchase attribution, and customer segmentation.'
+	comment='Semantic view for CRM sales intelligence with Customer 360 and Email Analytics - enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, and response time analysis.'
 	ai_sql_generation $$
     When generating SQL:
     1. Always filter for SYSTEM_CURRENT_FLAG = 'Y' on opportunities table to get current records only
-    2. For this month queries, use DATE_TRUNC('MONTH', CURRENT_DATE())
-    3. For this quarter queries, use DATE_TRUNC('QUARTER', CURRENT_DATE())
-    4. Round currency values to 2 decimal places
-    5. For percentage metrics, multiply by 1 to ensure numeric display
-    6. When showing health scores, include the health_category for context
-    7. For at-risk queries, focus on health_category IN ('At Risk', 'Critical')
-    8. For department comparisons, join through users_to_ticket_dept relationship
-    9. For Customer 360 queries, use the customer_360 table directly or via the opportunities_to_customer relationship
-    10. When asked about actual revenue or ticket sales, use customer_360.total_ticket_revenue (not pipeline amounts)
-    11. When asked about lifetime value or LTV, use customer_360.estimated_lifetime_value
-    12. For customer segments: CRM + Purchaser, CRM Only, Direct Purchaser, Prospect
-    13. For revenue tiers: Platinum ($50K+), Gold ($10K-$50K), Silver ($1K-$10K), Bronze (<$1K), No Revenue
-    14. For recency tiers: Active (30 days), Recent (90 days), Lapsed (1 year), Dormant (1+ year), No Purchases
-    15. Churn risk customers had purchases but none in 365+ days AND no open opportunities
-    16. Upsell candidates buy single game tickets but not season tickets
+    2. CRITICAL DATE FILTERING - CREATED_DATE, CLOSE_DATE, and MESSAGE_DATE are TIMESTAMP_TZ fields. NEVER use DATE_TRUNC(field) = 'date-string' as it fails on timestamp comparison. Always use range-based filtering:
+       - For this month: field >= DATE_TRUNC('MONTH', CURRENT_DATE()) AND field < DATEADD('MONTH', 1, DATE_TRUNC('MONTH', CURRENT_DATE()))
+       - For this quarter: field >= DATE_TRUNC('QUARTER', CURRENT_DATE()) AND field < DATEADD('QUARTER', 1, DATE_TRUNC('QUARTER', CURRENT_DATE()))
+       - For this year: field >= DATE_TRUNC('YEAR', CURRENT_DATE()) AND field < DATEADD('YEAR', 1, DATE_TRUNC('YEAR', CURRENT_DATE()))
+       - For last month: field >= DATEADD('MONTH', -1, DATE_TRUNC('MONTH', CURRENT_DATE())) AND field < DATE_TRUNC('MONTH', CURRENT_DATE())
+       - For a specific month: field >= '2026-02-01'::TIMESTAMP_NTZ AND field < '2026-03-01'::TIMESTAMP_NTZ
+    3. Round currency values to 2 decimal places
+    4. For percentage metrics, multiply by 1 to ensure numeric display
+    5. When showing health scores, include the health_category for context
+    6. For at-risk queries, focus on health_category IN ('At Risk', 'Critical')
+    7. For department comparisons, join through users_to_ticket_dept relationship
+    8. For Customer 360 queries, use the customer_360 table directly or via the opportunities_to_customer relationship
+    9. When asked about actual revenue or ticket sales, use customer_360.total_ticket_revenue (not pipeline amounts)
+    10. When asked about lifetime value or LTV, use customer_360.estimated_lifetime_value
+    11. For customer segments: CRM + Purchaser, CRM Only, Direct Purchaser, Prospect
+    12. For revenue tiers: Platinum ($50K+), Gold ($10K-$50K), Silver ($1K-$10K), Bronze (<$1K), No Revenue
+    13. For recency tiers: Active (30 days), Recent (90 days), Lapsed (1 year), Dormant (1+ year), No Purchases
+    14. Churn risk customers had purchases but none in 365+ days AND no open opportunities
+    15. Upsell candidates buy single game tickets but not season tickets
+    16. Department codes: TICKET_SALES = Group AEs (7 reps), TICKET_SERVICE = Service Reps (4 reps), TICKET_MEMBER_AE = Season Member AEs (2 reps), TICKET_TSR = Ticket Sales Reps (4 reps), CORPORATE_PARTNERSHIP_SALES = CP Sales (6 reps)
+    17. When asked about Group AEs or group account executives, filter ticket_team_dept.department = 'TICKET_SALES'
+    18. When asked about SM AEs or season membership or member AEs, filter ticket_team_dept.department = 'TICKET_MEMBER_AE'
+    19. When asked about TSRs or ticket sales reps, filter ticket_team_dept.department = 'TICKET_TSR'
+    20. When asked about corporate partnerships or sponsorship sales, filter ticket_team_dept.department = 'CORPORATE_PARTNERSHIP_SALES'
+    21. When comparing departments or teams, group by ticket_team_dept.department or ticket_team_dept.team
+    22. For email volume questions (how many emails sent, email count by rep), use the EMAIL_ANALYTICS table, NOT activity_metrics
+    23. For response time analysis, use email_analytics.response_minutes and response_time_bucket. Filter to email_direction = 'Outbound' when analyzing response rates
+    24. For best time to send or outreach optimization, group by email_analytics.time_of_day_bucket or email_analytics.email_hour and analyze response rates
+    25. For best day to send, group by email_analytics.email_day_name and analyze response rates
+    26. When filtering emails by date, use email_analytics.email_date with range-based filtering (same rules as rule 2)
   $$
 	ai_question_categorization $$
     Question Classification Rules:
@@ -138,23 +181,22 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     - Deal health, risk levels, or engagement
     - Sales rep performance or activity metrics
     - Win rates, conversion metrics
-    - Email/call volume and sentiment
-    - Department comparisons (TICKET_SALES vs TICKET_SERVICE)
+    - Email volume, emails sent or received by rep or department
+    - Best time of day or day of week to send emails
+    - Response times and response rates
+    - Department comparisons across all 5 teams (Group AEs, Service, Member AEs, TSRs, CP Sales)
+    - Individual rep performance by name
     - Customer lifetime value, revenue tiers, customer segments
     - Ticket purchase revenue, actual sales vs pipeline
     - Churn risk, upsell candidates, loyal customers
     - Customer conversion analysis (opportunity to purchase)
     - Revenue by ticket type (season tickets, single game, suite, group)
     - Customer recency and engagement patterns
+    - Corporate partnership pipeline and performance
     
     CLARIFICATION NEEDED for vague questions like:
     - Show me deals without time frame or filters
     - How are we doing without specific metrics
     - Show me customers without segment or tier filter
     Ask user to specify: which metric, which time period, or which segment
-    
-    REJECT questions about:
-    - Individual customer PII, email addresses, or home addresses
-    - Questions requiring data not in this semantic view
-    Direct users to contact their data administrator.
   $$;
