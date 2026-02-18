@@ -71,7 +71,10 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CUSTOMER_360.PURCHASE_SEASON_LIST as customer_360.PURCHASE_SEASONS with synonyms=('seasons purchased','active seasons') comment='Comma-separated list of seasons the customer has purchased tickets for',
 		CUSTOMER_360.PERSON_ACCOUNT as customer_360.IS_PERSON_ACCOUNT with synonyms=('person account','individual','person vs business') comment='Whether this is a person account vs business account',
 		CUSTOMER_360.ACCOUNT_BILLING_CITY as customer_360.BILLING_CITY with synonyms=('city','customer city') comment='Billing city of the customer account',
-		CUSTOMER_360.ACCOUNT_BILLING_STATE as customer_360.BILLING_STATE with synonyms=('state','customer state') comment='Billing state of the customer account'
+		CUSTOMER_360.ACCOUNT_BILLING_STATE as customer_360.BILLING_STATE with synonyms=('state','customer state') comment='Billing state of the customer account',
+		OPPORTUNITIES.CREATED_DATE as opportunities.CREATED_DATE with synonyms=('creation date','opened date','opportunity created','date created') comment='Date when the opportunity was first created in Salesforce',
+		OPPORTUNITIES.CREATED_MONTH as DATE_TRUNC('MONTH', opportunities.CREATED_DATE) with synonyms=('creation month','opened month') comment='Month when the opportunity was created',
+		OPPORTUNITIES.CREATED_QUARTER as DATE_TRUNC('QUARTER', opportunities.CREATED_DATE) with synonyms=('creation quarter','opened quarter') comment='Quarter when the opportunity was created'
 	)
 	metrics (
 		OPPORTUNITIES.TOTAL_PIPELINE_VALUE as SUM(opportunities.deal_amount) comment='Total value of all opportunities in the pipeline',
