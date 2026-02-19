@@ -1,0 +1,176 @@
+CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
+
+  COMMENT = 'CRM Agent (Account & Relationship Management) - Intelligent CRM assistant for Tampa Bay Rays sales teams. Combines pipeline analytics, email intelligence, call activity search, and deal context.'
+
+  PROFILE = '{"display_name": "CRM - Sales Intelligence Agent", "avatar": "sales-analytics-icon", "color": "blue"}'
+
+  FROM SPECIFICATION $$
+
+  models:
+    orchestration: claude-sonnet-4-20250514
+
+  orchestration:
+    budget:
+      seconds: 45
+      tokens: 25000
+
+  instructions:
+
+    system: |
+      You are ARM (Account & Relationship Management Agent), an intelligent sales assistant
+      for the Tampa Bay Rays ticketing and sponsorship sales teams.
+
+      You have access to 4 tools that provide complementary intelligence:
+      1. CRM_Analytics - Structured pipeline data, metrics, and KPIs
+      2. Email_Search - Searchable email communications with sentiment
+      3. Call_Search - Phone call notes and activity from Zoom Contact Center
+      4. Opportunity_Search - Deal context, objections, and health assessments
+
+      RULES:
+      - Always cite which tool(s) you used
+      - Format revenue as USD with 2 decimal places
+      - Format percentages with 1 decimal place
+      - When asked for a "full brief" or "complete picture", use multiple tools
+      - Never fabricate data - only report what the tools return
+      - For date-based questions, use date range filters (never DATE_TRUNC = string)
+
+    response: |
+      Be concise and lead with the answer. Use tables for multi-row data.
+      When providing deal health insights, structure as:
+      - Current Status (from CRM_Analytics)
+      - Recent Communications (from Email_Search and/or Call_Search)
+      - Risk Factors and Recommendations
+
+    orchestration: |
+      ROUTING RULES:
+      - Pipeline value, deal counts, rep performance, stage analysis, call volume metrics -> CRM_Analytics
+      - Email content, sentiment, what was discussed via email -> Email_Search
+      - Phone call notes, what was discussed on calls, call outcomes -> Call_Search
+      - Deal descriptions, objections, loss reasons, next steps -> Opportunity_Search
+      - "Full brief" or "complete picture" -> Use CRM_Analytics + Email_Search + Call_Search + Opportunity_Search
+      - "At risk" or "deal health" -> CRM_Analytics for scores, then Opportunity_Search for context
+      - "When was last contact" -> CRM_Analytics for dates, then Email_Search + Call_Search for details
+
+      IMPORTANT: When the user asks about communications or conversations with a customer,
+      search BOTH Email_Search AND Call_Search to get the complete picture.
+
+    sample_questions:
+      - question: "What is our total pipeline value this quarter?"
+      - question: "Show me at-risk deals closing this month"
+      - question: "Find emails about pricing from last week"
+      - question: "What was discussed on calls with [customer name]?"
+      - question: "Give me a full brief on [opportunity name]"
+      - question: "Which reps have the most outbound calls this month?"
+      - question: "Compare email and call activity across the ticket sales team"
+
+  tools:
+
+    # -------------------------------------------------------------------------
+    # TOOL 1: CORTEX ANALYST - STRUCTURED PIPELINE & METRICS
+    # -------------------------------------------------------------------------
+    - tool_spec:
+        type: cortex_analyst_text_to_sql
+        name: CRM_Analytics
+        description: |
+          Query structured CRM pipeline data for the Tampa Bay Rays sales organization.
+          This tool converts natural language to SQL against the semantic view containing:
+          - OPPORTUNITIES: Revenue amounts, stages, probability, close dates, win/loss status
+          - DEAL_HEALTH: AI health scores (0-100), categories (Healthy/At Risk/Critical)
+          - ACTIVITY_METRICS: Email counts, call counts, engagement levels, ghosting flags
+          - CALL_ACTIVITY: Call direction (inbound/outbound), duration, agent name, disposition, missed calls, note logging rates
+          - EMAIL_ANALYTICS: Email volume, response times, send time patterns, sentiment
+          - USERS: Sales rep names, emails, departments
+          - TICKET_TEAM_DEPT: Team/department classification for 23 reps across 5 departments
+          - CUSTOMER_360: Customer profiles, revenue tiers, churn risk, upsell flags
+
+          Use this tool for ANY quantitative question: pipeline value, deal counts, rep
+          performance comparisons, call volumes, email volumes, win rates, health scores,
+          engagement metrics, and trend analysis.
+
+    # -------------------------------------------------------------------------
+    # TOOL 2: CORTEX SEARCH - EMAIL COMMUNICATIONS
+    # -------------------------------------------------------------------------
+    - tool_spec:
+        type: cortex_search
+        name: Email_Search
+        description: |
+          Semantic search across 100,900 Tampa Bay Rays email communications enriched
+          with AI sentiment analysis and topic classification. Search email subjects and
+          bodies for specific topics, customer discussions, or communication patterns.
+
+          Use this tool when asked about:
+          - What was discussed in emails with a customer
+          - Finding emails about specific topics (pricing, contracts, renewals)
+          - Email sentiment and tone analysis
+          - Recent communications with specific accounts
+          - Objections or concerns raised via email
+
+          Filter attributes: rep_name, email_direction, sentiment_category, email_topic,
+          opportunity_id, email_date
+
+    # -------------------------------------------------------------------------
+    # TOOL 3: CORTEX SEARCH - CALL NOTES & ACTIVITY
+    # -------------------------------------------------------------------------
+    - tool_spec:
+        type: cortex_search
+        name: Call_Search
+        description: |
+          Semantic search across 14,533+ call notes from Zoom Contact Center sessions.
+          Searches rep-logged notes from phone calls, including task subjects and task
+          notes linked to each call. Covers 44,152 total sessions from 21 agents.
+
+          Use this tool when asked about:
+          - What was discussed on phone calls with a customer
+          - Finding calls where specific topics were mentioned
+          - Call outcomes and dispositions
+          - Phone conversation notes from specific reps
+          - Voicemail or missed call context
+
+          Filter attributes: agent_name, call_direction, disposition,
+          call_duration_category, opportunity_id, account_id, call_date
+
+    # -------------------------------------------------------------------------
+    # TOOL 4: CORTEX SEARCH - OPPORTUNITY CONTEXT & OBJECTIONS
+    # -------------------------------------------------------------------------
+    - tool_spec:
+        type: cortex_search
+        name: Opportunity_Search
+        description: |
+          Semantic search across 22,787 Tampa Bay Rays opportunities including
+          descriptions, objections, loss reasons, next steps, and AI deal health
+          assessments. Surfaces the "why" behind deal status.
+
+          Use this tool when asked about:
+          - Why a specific deal is at risk or was lost
+          - Finding deals with specific objections or themes
+          - Deal descriptions and next steps
+          - Competitor mentions across opportunities
+          - Patterns in lost deal reasons
+
+          Filter attributes: stage_name, health_category, owner_name,
+          is_closed, is_won, ticket_type, season
+
+  tool_resources:
+
+    CRM_Analytics:
+      semantic_view: "TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE"
+
+    Email_Search:
+      name: "TBRDP_DW_PROD.IM_RPT.EMAIL_SEARCH_SERVICE"
+      max_results: "10"
+      title_column: "SUBJECT"
+      id_column: "EMAIL_ID"
+
+    Call_Search:
+      name: "TBRDP_DW_PROD.IM_RPT.CALL_SEARCH_SERVICE"
+      max_results: "10"
+      title_column: "agent_name"
+      id_column: "session_id"
+
+    Opportunity_Search:
+      name: "TBRDP_DW_PROD.IM_RPT.OPPORTUNITY_SEARCH_SERVICE"
+      max_results: "10"
+      title_column: "opportunity_name"
+      id_column: "opportunity_id"
+
+  $$;
