@@ -1,4 +1,66 @@
 # ARM Agent - Data Schema Documentation
+I am continuing development of the Tampa Bay Rays ARM Agent (Account & Relationship Management Agent) — a CRM Intelligence Platform built on Snowflake Cortex.
+Database: TBRDP_DW_PROD.IM_RPT
+Warehouse: TBRDP_DW_CORTEX_XS_WH
+ARCHITECTURE — Streams + Tasks (rebuilt Feb 17-18, 2026 after $25K/week Dynamic Table cost crisis):
+Permanent Data Tables:
+
+T_EMAIL_ENRICHED (~98K rows) — emails with AI sentiment, topic, signal, summary via llama3.1-70b
+T_OPPORTUNITY_ACTIVITY_METRICS (22,787 rows) — email/call/task counts, engagement levels, ghosting flags per opportunity
+T_DEAL_HEALTH_SCORE (22,787 rows) — AI health scores (0-100), categories (Healthy/At Risk/Critical), deal assessments
+T_CUSTOMER_360 (371,485 rows) — unified customer profiles with LTV, revenue tiers, churn risk, upsell flags, ticket purchase history
+T_EMAIL_ANALYTICS (100,900 rows) — individual email records with direction, rep attribution, response times, time-of-day buckets, sentiment
+T_TICKET_TEAM_DEPARTMENT_MAPPING (23 reps) — 5 departments: TICKET_SALES (7 Group AEs), TICKET_SERVICE (4), TICKET_MEMBER_AE (2), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6)
+T_EMAIL_SEARCH_SOURCE — staging for email search (replaced by direct view)
+T_OPPORTUNITY_SEARCH_SOURCE — staging for opportunity search (replaced by direct view)
+
+Streams (4 active, append-only):
+
+STM_NEW_EMAILS → V_ODS_SALESFORCE_CRM_EMAIL_MESSAGE
+STM_OPPORTUNITY_CHANGES → V_ODS_SALESFORCE_OPPORTUNITY
+STM_CALL_LOG_CHANGES → V_ODS_SALESFORCE_CRM_ZVC_ZOOM_CALL_LOG_C
+STM_TASK_CHANGES → V_ODS_SALESFORCE_TASK
+
+Task DAG (5 tasks, stream-triggered every 2 hours):
+
+TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA condition, LIMIT 500)
+
+TSK_REFRESH_ACTIVITY_METRICS (child, pure SQL)
+
+TSK_REFRESH_DEAL_HEALTH (grandchild, 1 AI call, changed-only filter ~200 opps)
+TSK_REFRESH_CUSTOMER_360 (grandchild, pure SQL)
+TSK_REFRESH_EMAIL_ANALYTICS (grandchild, pure SQL, once-daily via timestamp check)
+
+Cortex Search Services (2 active):
+
+EMAIL_SEARCH_SERVICE — reads from V_EMAIL_SEARCH_SOURCE view on T_EMAIL_ENRICHED, 4-hour lag, snowflake-arctic-embed-l-v2.0
+OPPORTUNITY_SEARCH_SERVICE — reads from V_OPPORTUNITY_CONTEXT_SEARCH view on V_ODS_SALESFORCE_OPPORTUNITY + T_DEAL_HEALTH_SCORE, 6-hour lag
+
+Semantic View: SV_CRM_SALES_INTELLIGENCE
+
+7 logical tables: OPPORTUNITIES, DEAL_HEALTH, ACTIVITY_METRICS, USERS, TICKET_TEAM_DEPT, CUSTOMER_360, EMAIL_ANALYTICS
+Named filter: CURRENT_RECORDS_ONLY (SYSTEM_CURRENT_FLAG = 'Y') on OPPORTUNITIES
+Custom SQL generation rules including critical date range filtering (never DATE_TRUNC = string), department code mappings, email analytics routing
+3 verified queries for rep opportunity counts and department pipeline comparison
+ai_sql_generation and ai_question_categorization in $$ blocks
+
+ARM Agent: 3 tools connected:
+
+Cortex Analyst → SV_CRM_SALES_INTELLIGENCE
+Cortex Search → EMAIL_SEARCH_SERVICE
+Cortex Search → OPPORTUNITY_SEARCH_SERVICE
+
+Cost Profile: ~3-6/day ($90-180/month) vs. old $3,500/day. 5 layers of cost protection: stream consumption, SYSTEM
+STREAM_HAS_DATA, NOT EXISTS guards, LIMIT 500, changed-only scoring.
+
+Key Learnings:
+
+Dynamic Tables with Cortex AI functions force FULL refresh — never use them for AI enrichment
+Cortex Search Services can read directly from views (no staging table needed if change tracking works)
+WHEN clause on child tasks only supports SYSTEM$STREAM_HAS_DATA (no subqueries) — use BEGIN/IF for daily-only logic
+Timestamp fields (CREATED_DATE, CLOSE_DATE, MESSAGE_DATE) require range-based filtering, never DATE_TRUNC = string comparison
+CREATE OR REPLACE SEMANTIC VIEW wipes named filters and verified queries — must re-add in Snowsight editor after
+
 
 **Tampa Bay Rays CRM Intelligence Platform**  
 Database: `TBRDP_DW_PROD`  
