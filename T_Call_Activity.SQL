@@ -2,6 +2,13 @@
 -- FIX: Rebuild T_CALL_ACTIVITY with corrected AGENT_OWNER_ID for Session History
 -- Session History OWNER_ID is a queue/system ID, not the rep's User ID.
 -- We already join to Users via email — just store that User ID instead.
+--
+-- FIX 2: Added QUALIFY ROW_NUMBER() to all task_link CTEs to prevent fan-out
+-- when V_ODS_SALESFORCE_TASK has multiple SYSTEM_CURRENT_FLAG = 'Y' rows for
+-- the same task ID (SCD Type 2 data quality issue). Without this, a single
+-- call log record gets duplicated once per matching task row.
+-- NOTE: Do NOT run CREATE OR REPLACE TABLE to fix existing duplicates.
+-- Use the table swap dedup script instead (cheap — reads only T_CALL_ACTIVITY).
 -- =============================================================================
 
 CREATE OR REPLACE TABLE TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY AS
@@ -18,6 +25,7 @@ WITH task_link AS (
     FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_TASK t
     WHERE t.SYSTEM_CURRENT_FLAG = 'Y'
       AND t.IS_DELETED = FALSE
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY t.ID ORDER BY t.SYSTEM_VERSION DESC) = 1
 ),
 
 session_history_calls AS (
@@ -186,7 +194,7 @@ ALTER TABLE TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY
 
 
 -- Verify: Ben Knee should now have ONE agent_owner_id across both sources
-SELECT 
+SELECT
     call_source,
     agent_name,
     agent_owner_id,
@@ -218,6 +226,7 @@ BEGIN
                    t.CALL_DISPOSITION
             FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_TASK t
             WHERE t.SYSTEM_CURRENT_FLAG = 'Y' AND t.IS_DELETED = FALSE
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY t.ID ORDER BY t.SYSTEM_VERSION DESC) = 1
         )
         SELECT
             sh.ID,
@@ -304,6 +313,7 @@ BEGIN
                    t.CALL_DISPOSITION
             FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_TASK t
             WHERE t.SYSTEM_CURRENT_FLAG = 'Y' AND t.IS_DELETED = FALSE
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY t.ID ORDER BY t.SYSTEM_VERSION DESC) = 1
         )
         SELECT
             cl.ID,
@@ -383,4 +393,3 @@ BEGIN
 
     END IF;
 END;
-
