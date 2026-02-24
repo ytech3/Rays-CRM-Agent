@@ -125,6 +125,8 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
       ✓ Probability or win rate calculations
       ✓ Engagement metrics (email count, call frequency)
       ✓ Call volume, duration, or outbound/inbound metrics
+      ✓ Salesforce tasks by rep, due date, status, type, or priority
+      ✓ Task lists sorted by opportunity revenue ("list tasks from highest to lowest revenue")
       
       Example triggers: "total pipeline", "at-risk deals", "average health score",
       "deals closing this month", "win rate by rep", "weighted pipeline",
@@ -408,7 +410,15 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
           - Call duration analysis
           - Missed call rates and disposition breakdowns
           - Note logging rates by agent
-          
+
+          Salesforce Task Queries:
+          - Individual task records by rep name, due date, or status
+          - Tasks due last week, this week, today, or overdue
+          - Task lists linked to opportunities, sortable by opportunity revenue
+          - Pending vs completed task counts by rep
+          - Task type breakdowns (Call, Email, Meeting, Task)
+          - High priority or overdue task identification
+
           Sales Performance:
           - Win rates and conversion statistics
           - Won/lost deal counts and values
@@ -437,6 +447,8 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
           - close_date, close_month, close_quarter
           - engagement_level (High/Medium/Low)
           - is_closed, is_won (boolean flags)
+          - task_due_date (ACTIVITY_DATE — DATE field), task_status, task_type, task_priority
+          - task_subject, task_is_closed, task_call_disposition
           
           **EXAMPLE QUERIES THIS TOOL HANDLES:**
           - "What's my total pipeline value by stage?"
@@ -447,6 +459,10 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
           - "What's my win rate by sales stage?"
           - "Compare weighted pipeline across the sales team"
           - "Which reps have the most outbound calls this month?"
+          - "List all of [rep name]'s Salesforce tasks due last week sorted by opportunity revenue"
+          - "Show me overdue tasks for the sales team"
+          - "What tasks does [rep] have due this week?"
+          - "How many pending tasks does each rep have?"
     
     # -------------------------------------------------------------------------
     # TOOL 2: CORTEX SEARCH - EMAIL INTELLIGENCE

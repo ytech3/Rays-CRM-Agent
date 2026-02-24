@@ -1,3 +1,20 @@
+-- =====================================================
+-- Dedup view for V_ODS_SALESFORCE_TASK
+-- V_ODS_SALESFORCE_TASK has a known SCD Type 2 data
+-- quality issue where multiple SYSTEM_CURRENT_FLAG = 'Y'
+-- rows can exist for the same task ID. This view uses
+-- QUALIFY to guarantee exactly one row per task ID,
+-- taking the highest SYSTEM_VERSION as the winner.
+-- Always reference this view (not the raw source) for
+-- any task queries to prevent fan-out duplication.
+-- =====================================================
+CREATE OR REPLACE VIEW TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_TASKS_CURRENT AS
+SELECT *
+FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_TASK
+WHERE SYSTEM_CURRENT_FLAG = 'Y'
+  AND IS_DELETED = FALSE
+QUALIFY ROW_NUMBER() OVER (PARTITION BY ID ORDER BY SYSTEM_VERSION DESC) = 1;
+
 CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 	tables (
 		OPPORTUNITIES as TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY primary key (ID) with synonyms=('deals','pipeline','sales opportunities') comment='Sales opportunities with revenue, stage, and close dates',
@@ -6,7 +23,8 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		USERS as TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_USER primary key (ID) with synonyms=('sales reps','account executives','owners') comment='Sales representative details and team information',
 		TICKET_TEAM_DEPT as TBRDP_DW_PROD.IM_RPT.T_TICKET_TEAM_DEPARTMENT_MAPPING primary key (USER_ID) with synonyms=('ticket team','department classification','sales vs service','group AEs','SM AEs','TSRs','corporate partnerships') comment='Department classification for 23 reps across 5 teams: Ticket Sales Group AEs (7), Ticket Service (4), Ticket Member AEs (2), Ticket Sales Reps/TSRs (4), and Corporate Partnership Sales (6)',
 		CUSTOMER_360 as TBRDP_DW_PROD.IM_RPT.T_CUSTOMER_360 primary key (SF_ACCOUNT_ID) with synonyms=('customer intelligence','customer 360','customer profile','customer data','account intelligence','lifetime value','LTV','customer lifetime') comment='Unified customer view linking CRM opportunities to actual ticket purchases. Contains lifetime value, revenue tiers, conversion metrics, churn risk, and purchase history for 371K mapped customers.',
-		EMAIL_ANALYTICS as TBRDP_DW_PROD.IM_RPT.T_EMAIL_ANALYTICS primary key (EMAIL_ID) with synonyms=('emails','email activity','email metrics','email volume','outreach','communications','response times') comment='Individual email records with timestamps, direction, rep attribution, sentiment, response time calculations, and time-of-day analysis. Use for email volume counts, send time optimization, and response rate analysis.'
+		EMAIL_ANALYTICS as TBRDP_DW_PROD.IM_RPT.T_EMAIL_ANALYTICS primary key (EMAIL_ID) with synonyms=('emails','email activity','email metrics','email volume','outreach','communications','response times') comment='Individual email records with timestamps, direction, rep attribution, sentiment, response time calculations, and time-of-day analysis. Use for email volume counts, send time optimization, and response rate analysis.',
+		SALESFORCE_TASKS as TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_TASKS_CURRENT primary key (ID) with synonyms=('tasks','to-dos','follow-ups','action items','salesforce tasks','task list') comment='Individual Salesforce task records, pre-deduplicated for SCD Type 2 safety. Contains due dates (ACTIVITY_DATE), status, type, priority, and foreign keys to opportunities (WHAT_ID) and reps (OWNER_ID). Use for listing tasks by rep, filtering by due date range, or sorting by linked opportunity revenue.'
 	)
 	relationships (
 		OPPORTUNITIES_TO_ACTIVITY as OPPORTUNITIES(ID) references ACTIVITY_METRICS(OPPORTUNITY_ID),
@@ -15,7 +33,9 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		OPPORTUNITIES_TO_OWNER as OPPORTUNITIES(OWNER_ID) references USERS(ID),
 		USERS_TO_TICKET_DEPT as USERS(ID) references TICKET_TEAM_DEPT(USER_ID),
 		EMAILS_TO_OPPORTUNITY as EMAIL_ANALYTICS(OPPORTUNITY_ID) references OPPORTUNITIES(ID),
-		EMAILS_TO_REP as EMAIL_ANALYTICS(REP_USER_ID) references USERS(ID)
+		EMAILS_TO_REP as EMAIL_ANALYTICS(REP_USER_ID) references USERS(ID),
+		TASKS_TO_OPPORTUNITY as SALESFORCE_TASKS(WHAT_ID) references OPPORTUNITIES(ID),
+		TASKS_TO_OWNER as SALESFORCE_TASKS(OWNER_ID) references USERS(ID)
 	)
 	facts (
 		OPPORTUNITIES.DEAL_AMOUNT as opportunities.AMOUNT comment='Revenue amount of the opportunity',
@@ -90,7 +110,15 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		EMAIL_ANALYTICS.EMAIL_REP as email_analytics.REP_NAME with synonyms=('email sender','who sent','emailing rep') comment='Name of the rep associated with this email (sender for outbound, opportunity owner for inbound)',
 		EMAIL_ANALYTICS.EMAIL_SENT_CATEGORY as email_analytics.SENTIMENT_CATEGORY with synonyms=('email tone','email sentiment') comment='Sentiment category of this email: Positive, Neutral, Slightly Negative, or Negative',
 		EMAIL_ANALYTICS.EMAIL_OPP_NAME as email_analytics.OPPORTUNITY_NAME with synonyms=('related opportunity','email opportunity') comment='Name of the opportunity this email is associated with',
-		EMAIL_ANALYTICS.EMAIL_SUBJECT as email_analytics.SUBJECT with synonyms=('email subject','subject line') comment='Subject line of the email'
+		EMAIL_ANALYTICS.EMAIL_SUBJECT as email_analytics.SUBJECT with synonyms=('email subject','subject line') comment='Subject line of the email',
+		SALESFORCE_TASKS.TASK_SUBJECT as salesforce_tasks.SUBJECT with synonyms=('task name','task title','task subject') comment='Subject/title of the Salesforce task',
+		SALESFORCE_TASKS.TASK_STATUS as salesforce_tasks.STATUS with synonyms=('task status','completion status') comment='Task status: Completed, In Progress, Not Started',
+		SALESFORCE_TASKS.TASK_TYPE as salesforce_tasks.TYPE with synonyms=('task type','activity type','call task','meeting task') comment='Type of task: Call, Email, Meeting, Task',
+		SALESFORCE_TASKS.TASK_PRIORITY as salesforce_tasks.PRIORITY with synonyms=('task priority','urgency','high priority tasks') comment='Priority level of the task: High, Normal, Low',
+		SALESFORCE_TASKS.TASK_DUE_DATE as salesforce_tasks.ACTIVITY_DATE with synonyms=('due date','task due date','activity date','scheduled date','when due') comment='Scheduled due date for the task. This is a DATE field — use direct date comparisons, not TIMESTAMP casting.',
+		SALESFORCE_TASKS.TASK_IS_CLOSED as salesforce_tasks.IS_CLOSED with synonyms=('task closed','completed flag','is complete') comment='Whether the task is closed/completed (boolean)',
+		SALESFORCE_TASKS.TASK_CALL_DISPOSITION as salesforce_tasks.CALL_DISPOSITION with synonyms=('call outcome','call result','disposition') comment='Call disposition/outcome for phone call type tasks',
+		SALESFORCE_TASKS.TASK_DESCRIPTION as salesforce_tasks.DESCRIPTION with synonyms=('task notes','task details','task description','task body') comment='Detailed description or notes entered on the task'
 	)
 	metrics (
 		OPPORTUNITIES.TOTAL_PIPELINE_VALUE as SUM(opportunities.deal_amount) comment='Total value of all opportunities in the pipeline',
@@ -136,9 +164,10 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		EMAIL_ANALYTICS.TOTAL_EMAIL_COUNT as COUNT(email_analytics.EMAIL_ID) with synonyms=('total emails','all emails','email count') comment='Total number of all emails (inbound + outbound)',
 		EMAIL_ANALYTICS.AVG_RESPONSE_MINUTES as AVG(email_analytics.email_response_minutes) with synonyms=('average response time','mean response time','avg reply time') comment='Average response time in minutes for outbound emails that received a reply within 30 days',
 		EMAIL_ANALYTICS.MEDIAN_RESPONSE_MINUTES as MEDIAN(email_analytics.email_response_minutes) with synonyms=('median response time','typical response time') comment='Median response time in minutes — more representative than average as it ignores outliers',
-		EMAIL_ANALYTICS.RESPONSE_RATE as (COUNT(CASE WHEN email_analytics.email_response_bucket != 'No Response' AND email_analytics.email_dir = 'Outbound' THEN 1 END) * 100.0) / NULLIF(COUNT(CASE WHEN email_analytics.email_dir = 'Outbound' THEN 1 END), 0) with synonyms=('reply rate','email response rate','response percentage') comment='Percentage of outbound emails that received a response within 30 days'
+		EMAIL_ANALYTICS.RESPONSE_RATE as (COUNT(CASE WHEN email_analytics.email_response_bucket != 'No Response' AND email_analytics.email_dir = 'Outbound' THEN 1 END) * 100.0) / NULLIF(COUNT(CASE WHEN email_analytics.email_dir = 'Outbound' THEN 1 END), 0) with synonyms=('reply rate','email response rate','response percentage') comment='Percentage of outbound emails that received a response within 30 days',
+		SALESFORCE_TASKS.TASK_COUNT as COUNT(salesforce_tasks.ID) comment='Total number of Salesforce tasks'
 	)
-	comment='Semantic view for CRM sales intelligence with Customer 360 and Email Analytics - enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, and response time analysis.'
+	comment='Semantic view for CRM sales intelligence with Customer 360 and Email Analytics - enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, and individual Salesforce task queries by rep, due date, status, and linked opportunity revenue.'
 	ai_sql_generation $$
     When generating SQL:
     1. Always filter for SYSTEM_CURRENT_FLAG = 'Y' on opportunities table to get current records only
@@ -172,10 +201,19 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     24. For best time to send or outreach optimization, group by email_analytics.time_of_day_bucket or email_analytics.email_hour and analyze response rates
     25. For best day to send, group by email_analytics.email_day_name and analyze response rates
     26. When filtering emails by date, use email_analytics.email_date with range-based filtering (same rules as rule 2)
+    27. TASK QUERIES — salesforce_tasks.ACTIVITY_DATE is a DATE field (not TIMESTAMP). Use direct date comparisons only — do NOT cast to TIMESTAMP:
+        - For "last week" (previous calendar week, Sun–Sat): ACTIVITY_DATE >= DATEADD('week', -1, DATE_TRUNC('week', CURRENT_DATE())) AND ACTIVITY_DATE < DATE_TRUNC('week', CURRENT_DATE())
+        - For "this week": ACTIVITY_DATE >= DATE_TRUNC('week', CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD('week', 1, DATE_TRUNC('week', CURRENT_DATE()))
+        - For "today": ACTIVITY_DATE = CURRENT_DATE()
+        - For "overdue" (past due and not yet closed): ACTIVITY_DATE < CURRENT_DATE() AND salesforce_tasks.IS_CLOSED = FALSE
+        - For "next 7 days": ACTIVITY_DATE > CURRENT_DATE() AND ACTIVITY_DATE <= DATEADD('day', 7, CURRENT_DATE())
+    28. When filtering tasks by rep name, join SALESFORCE_TASKS to USERS via the TASKS_TO_OWNER relationship and filter using: users.NAME ILIKE '%rep name%'
+    29. When asked to sort or list tasks by opportunity revenue, join SALESFORCE_TASKS to OPPORTUNITIES via the TASKS_TO_OPPORTUNITY relationship and ORDER BY opportunities.AMOUNT DESC NULLS LAST. Tasks where WHAT_ID IS NULL (no linked opportunity) should appear last.
+    30. For task listing queries, always include these columns in the output: salesforce_tasks.SUBJECT, salesforce_tasks.ACTIVITY_DATE, salesforce_tasks.STATUS, salesforce_tasks.PRIORITY, and the linked opportunity NAME and AMOUNT where available.
   $$
 	ai_question_categorization $$
     Question Classification Rules:
-    
+
     ANSWERABLE questions about:
     - Pipeline value, stage, or close dates
     - Deal health, risk levels, or engagement
@@ -193,7 +231,11 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     - Revenue by ticket type (season tickets, single game, suite, group)
     - Customer recency and engagement patterns
     - Corporate partnership pipeline and performance
-    
+    - Salesforce tasks by rep name, due date, status, type, or priority
+    - Tasks due last week, this week, today, or overdue
+    - Task lists sorted by linked opportunity revenue
+    - Pending, completed, or overdue task counts by rep
+
     CLARIFICATION NEEDED for vague questions like:
     - Show me deals without time frame or filters
     - How are we doing without specific metrics
