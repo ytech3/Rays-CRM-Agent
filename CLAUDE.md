@@ -94,7 +94,7 @@ Unions two Zoom data sources:
 
 **Known issue pattern**: `V_ODS_SALESFORCE_TASK` can have multiple `SYSTEM_CURRENT_FLAG = 'Y'` rows for the same task ID (SCD Type 2 data quality). All `task_link` CTEs must include `QUALIFY ROW_NUMBER() OVER (PARTITION BY t.ID ORDER BY t.SYSTEM_VERSION DESC) = 1` to prevent fan-out duplication.
 
-**Do NOT run `CREATE OR REPLACE TABLE T_CALL_ACTIVITY`** to fix duplicates — use the table swap dedup approach instead (reads only the existing table, not all source views).
+**Do NOT run `CREATE OR REPLACE TABLE T_CALL_ACTIVITY`** — ever. It causes two unrecoverable problems: (1) wipes change tracking, breaking CALL_SEARCH_SERVICE; (2) orphans stream records that were already consumed, creating permanent data gaps. If records are missing, use a source-view backfill: INSERT INTO T_CALL_ACTIVITY ... FROM V_ODS_SALESFORCE_CRM_ZVC_SESSION_HISTORY_C / V_ODS_SALESFORCE_CRM_ZVC_ZOOM_CALL_LOG_C with NOT EXISTS guard. This is safe and idempotent.
 
 ## Sales Team Structure
 
