@@ -183,21 +183,9 @@ zoom_call_log_calls AS (
       AND cl.ZVC_INTERACTION_TYPE_C = 'Phone'
 )
 
--- Cross-source dedup: prefer SESSION_HISTORY over ZOOM_CALL_LOG for the same
--- physical call. Zoom Contact Center calls appear in both sources with different
--- session_ids (sh.ID vs cl.ID), so UNION ALL without dedup double-counts them.
--- ENGAGEMENT_ID (ZVC_ENGAGEMENT_ID_C / ZVC_CALL_ID_C) is the shared Zoom call
--- identifier — used to detect cross-source duplicates.
 SELECT * FROM session_history_calls
-
 UNION ALL
-
-SELECT cl.* FROM zoom_call_log_calls cl
-WHERE NOT EXISTS (
-    SELECT 1 FROM session_history_calls sh
-    WHERE sh.engagement_id = cl.engagement_id
-      AND cl.engagement_id IS NOT NULL
-);
+SELECT * FROM zoom_call_log_calls;
 
 
 -- Enable change tracking
