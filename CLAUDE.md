@@ -15,9 +15,10 @@ There are no build, lint, or test commands. Changes are deployed by executing SQ
 ## Files
 
 - **T_Call_Activity.SQL** — Defines `T_CALL_ACTIVITY`, a permanent table unioning Zoom Session History and Zoom Call Log call records. Also defines `TSK_REFRESH_CALL_ACTIVITY`, the incremental task that appends new records daily.
-- **Semantic_View.SQL** — Defines `SV_CRM_SALES_INTELLIGENCE`, the Snowflake Semantic View used by Cortex Analyst for natural-language SQL queries.
+- **Semantic_View.SQL** — Defines `SV_CRM_SALES_INTELLIGENCE`, the Snowflake Semantic View (8 logical tables) used by Cortex Analyst for natural-language SQL queries.
 - **Email_Analytics.SQL** — Defines `T_EMAIL_ANALYTICS`, a permanent table of individual email records with direction, rep attribution, response times, sentiment, and time-of-day buckets.
-- **CRM_AGENT_CONFIG.yaml** — Cortex Agent configuration file defining the three tools (Cortex Analyst, Email Search, Opportunity Search) and system prompt.
+- **Health_Check.SQL** — Defines `TSK_CRM_AGENT_HEALTH_CHECK` (daily 7am ET monitoring task), `CRM_AGENT_ALERTS` notification integration, `T_CRM_AGENT_HEALTH_LOG` audit table, manual health check queries, and emergency recovery procedures.
+- **CRM Agent Config.yaml** — Cortex Agent configuration file defining the four tools (CRM Analytics, Email Search, Call Search, Opportunity Search) and system prompt.
 - **CRM_AGENT_FILES.md** — Comprehensive schema documentation for all source views and enriched tables.
 
 ## Architecture
@@ -38,14 +39,17 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 | `T_CALL_ACTIVITY` | Growing | Zoom call records from Session History + Call Log, deduped by session_id |
 | `T_TICKET_TEAM_DEPARTMENT_MAPPING` | 23 reps | 5 departments: TICKET_SALES (7), TICKET_SERVICE (4), TICKET_MEMBER_AE (2), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6) |
 
-### Streams (4 active, append-only)
+### Streams (5 active, append-only)
 
 | Stream | Source View |
 |--------|------------|
 | `STM_NEW_EMAILS` | `V_ODS_SALESFORCE_CRM_EMAIL_MESSAGE` |
 | `STM_OPPORTUNITY_CHANGES` | `V_ODS_SALESFORCE_OPPORTUNITY` |
 | `STM_CALL_LOG_CHANGES` | `V_ODS_SALESFORCE_CRM_ZVC_ZOOM_CALL_LOG_C` |
+| `STM_SESSION_HISTORY_CHANGES` | `V_ODS_SALESFORCE_CRM_ZVC_SESSION_HISTORY_C` |
 | `STM_TASK_CHANGES` | `V_ODS_SALESFORCE_TASK` |
+
+**Stream staleness**: Streams go stale if not consumed within ~14 days. If a stream shows `stale=true` in `SHOW STREAMS`, recreate it with `CREATE OR REPLACE STREAM ... ON VIEW ... APPEND_ONLY = TRUE`.
 
 ### Task DAG (6 tasks, 2-hour cycle)
 
@@ -60,16 +64,17 @@ TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA guard, LIM
 
 **Critical**: When modifying any task in the DAG, the root task (`TSK_ENRICH_NEW_EMAILS`) must be suspended first, then the child task modified, then the root task resumed.
 
-### Cortex Search Services (2 active)
+### Cortex Search Services (3 active)
 
 | Service | Source | Lag | Embedding Model |
 |---------|--------|-----|-----------------|
 | `EMAIL_SEARCH_SERVICE` | `V_EMAIL_SEARCH_SOURCE` (view on `T_EMAIL_ENRICHED`) | 4 hours | snowflake-arctic-embed-l-v2.0 |
+| `CALL_SEARCH_SERVICE` | `V_CALL_SEARCH_SOURCE` (view on `T_CALL_ACTIVITY`) | 1 day | snowflake-arctic-embed-l-v2.0 |
 | `OPPORTUNITY_SEARCH_SERVICE` | `V_OPPORTUNITY_CONTEXT_SEARCH` (view on opportunity + deal health) | 6 hours | snowflake-arctic-embed-l-v2.0 |
 
 ### Semantic View (`SV_CRM_SALES_INTELLIGENCE`)
 
-7 logical tables: `OPPORTUNITIES`, `DEAL_HEALTH`, `ACTIVITY_METRICS`, `USERS`, `TICKET_TEAM_DEPT`, `CUSTOMER_360`, `EMAIL_ANALYTICS`
+8 logical tables: `OPPORTUNITIES`, `DEAL_HEALTH`, `ACTIVITY_METRICS`, `USERS`, `TICKET_TEAM_DEPT`, `CUSTOMER_360`, `EMAIL_ANALYTICS`, `CALL_ACTIVITY`
 
 Named filter: `CURRENT_RECORDS_ONLY` (`SYSTEM_CURRENT_FLAG = 'Y'`) on OPPORTUNITIES.
 
@@ -79,9 +84,10 @@ Named filter: `CURRENT_RECORDS_ONLY` (`SYSTEM_CURRENT_FLAG = 'Y'`) on OPPORTUNIT
 
 | Tool | Type | Capability |
 |------|------|------------|
-| `CRM_Analytics` | Cortex Analyst → `SV_CRM_SALES_INTELLIGENCE` | Structured SQL: pipeline metrics, rep performance, revenue forecasting |
-| `Email_Search` | Cortex Search → `EMAIL_SEARCH_SERVICE` | Semantic search across 90K+ emails by sentiment, topic, date |
-| `Opportunity_Search` | Cortex Search → `OPPORTUNITY_SEARCH_SERVICE` | Semantic search across 22K+ opportunities with AI health scores |
+| `CRM_Analytics` | Cortex Analyst → `SV_CRM_SALES_INTELLIGENCE` | Structured SQL: pipeline metrics, rep performance, call volume, revenue forecasting |
+| `Email_Search` | Cortex Search → `EMAIL_SEARCH_SERVICE` | Semantic search across 105K+ emails by sentiment, topic, date |
+| `Call_Search` | Cortex Search → `CALL_SEARCH_SERVICE` | Semantic search across 23K+ call notes, voicemails, dispositions |
+| `Opportunity_Search` | Cortex Search → `OPPORTUNITY_SEARCH_SERVICE` | Semantic search across 34K+ opportunities with AI health scores |
 
 ## T_CALL_ACTIVITY Design
 
@@ -125,3 +131,32 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 - Cortex Search Services require VARCHAR columns — extract JSON fields to VARCHAR before indexing
 - `WHEN` clause on child tasks only supports `SYSTEM$STREAM_HAS_DATA` — use `BEGIN/IF` blocks for more complex daily-only logic
 - Department codes in semantic view queries: `TICKET_TSR`, `TICKET_SALES`, `TICKET_SERVICE`, `TICKET_MEMBER_AE`, `CORPORATE_PARTNERSHIP_SALES`
+
+## Monitoring & Health Check
+
+### Automated Protection (deployed March 9, 2026)
+
+1. **Retry tolerance**: Root task `TSK_ENRICH_NEW_EMAILS` has `SUSPEND_TASK_AFTER_NUM_FAILURES = 3` — survives transient Cortex AI timeouts instead of dying on the first failure.
+2. **Daily health check**: `TSK_CRM_AGENT_HEALTH_CHECK` runs at 7am ET, checks freshness of all 6 permanent tables, and sends email via `CRM_AGENT_ALERTS` notification integration if anything is stale.
+3. **Audit log**: `T_CRM_AGENT_HEALTH_LOG` records every health check result (HEALTHY or UNHEALTHY with details).
+
+### Freshness Thresholds
+
+| Table | Stale After | Why |
+|-------|------------|-----|
+| `T_EMAIL_ENRICHED` | 26 hours | Should refresh every 2-hour cycle |
+| `T_OPPORTUNITY_ACTIVITY_METRICS` | 26 hours | Runs after every email enrichment |
+| `T_DEAL_HEALTH_SCORE` | 26 hours | Runs after activity metrics |
+| `T_CUSTOMER_360` | 26 hours | Runs after activity metrics |
+| `T_EMAIL_ANALYTICS` | 48 hours | Once-daily rebuild |
+| `T_CALL_ACTIVITY` | 48 hours | Once-daily incremental |
+
+### Emergency Recovery Playbook
+
+See `Health_Check.SQL` for full recovery procedures. Quick reference:
+
+- **Root task suspended** → `ALTER TASK TSK_ENRICH_NEW_EMAILS RESUME;`
+- **Stream stale** → `CREATE OR REPLACE STREAM ... ON VIEW ... APPEND_ONLY = TRUE;`
+- **Child task suspended** → Suspend root → resume child → resume root
+- **Full manual refresh** → Run Steps 1-8 from Health_Check.SQL comments (~30 min, ~$25-35)
+- **TASK_HISTORY query** → Must use `TBRDP_DW_PROD.INFORMATION_SCHEMA.TASK_HISTORY()` (fully qualified database prefix required)
