@@ -1,3 +1,20 @@
+-- =====================================================
+-- Dedup view for V_ODS_SALESFORCE_TASK
+-- V_ODS_SALESFORCE_TASK has a known SCD Type 2 data
+-- quality issue where multiple SYSTEM_CURRENT_FLAG = 'Y'
+-- rows can exist for the same task ID. This view uses
+-- QUALIFY to guarantee exactly one row per task ID,
+-- taking the highest SYSTEM_VERSION as the winner.
+-- Always reference this view (not the raw source) for
+-- any task queries to prevent fan-out duplication.
+-- =====================================================
+CREATE OR REPLACE VIEW TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_TASKS_CURRENT AS
+SELECT *
+FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_TASK
+WHERE SYSTEM_CURRENT_FLAG = 'Y'
+  AND IS_DELETED = FALSE
+QUALIFY ROW_NUMBER() OVER (PARTITION BY ID ORDER BY SYSTEM_VERSION DESC) = 1;
+
 CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 	tables (
 		OPPORTUNITIES as TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY primary key (ID) with synonyms=('deals','pipeline','sales opportunities') comment='Sales opportunities with revenue, stage, and close dates',
@@ -7,6 +24,7 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		TICKET_TEAM_DEPT as TBRDP_DW_PROD.IM_RPT.T_TICKET_TEAM_DEPARTMENT_MAPPING primary key (USER_ID) with synonyms=('ticket team','department classification','sales vs service','group AEs','SM AEs','TSRs','corporate partnerships') comment='Department classification for 23 reps across 5 teams: Ticket Sales Group AEs (7), Ticket Service (4), Ticket Member AEs (2), Ticket Sales Reps/TSRs (4), and Corporate Partnership Sales (6)',
 		CUSTOMER_360 as TBRDP_DW_PROD.IM_RPT.T_CUSTOMER_360 primary key (SF_ACCOUNT_ID) with synonyms=('customer intelligence','customer 360','customer profile','customer data','account intelligence','lifetime value','LTV','customer lifetime') comment='Unified customer view linking CRM opportunities to actual ticket purchases. Contains lifetime value, revenue tiers, conversion metrics, churn risk, and purchase history for 371K mapped customers.',
 		EMAIL_ANALYTICS as TBRDP_DW_PROD.IM_RPT.T_EMAIL_ANALYTICS primary key (EMAIL_ID) with synonyms=('emails','email activity','email metrics','email volume','outreach','communications','response times') comment='Individual email records with timestamps, direction, rep attribution, sentiment, response time calculations, and time-of-day analysis. Use for email volume counts, send time optimization, and response rate analysis.',
+		SALESFORCE_TASKS as TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_TASKS_CURRENT primary key (ID) with synonyms=('tasks','to-dos','follow-ups','action items','salesforce tasks','task list') comment='Individual Salesforce task records, pre-deduplicated for SCD Type 2 safety. Contains due dates (ACTIVITY_DATE), status, type, priority, and foreign keys to opportunities (WHAT_ID) and reps (OWNER_ID). Use for listing tasks by rep, filtering by due date range, or sorting by linked opportunity revenue.',
 		CALL_ACTIVITY as TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY primary key (SESSION_ID) with synonyms=('call activity','call data','call log','call metrics','calls','phone activity','phone calls','zoom calls') comment='Unified call activity from Zoom Contact Center (Session History) and Zoom Phone (Call Log). Contains call direction, talk time, duration, agent attribution, notes, and opportunity linkage. All timestamps in Eastern Time to match Tableau dashboard.'
 	)
 	relationships (
@@ -17,6 +35,8 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		USERS_TO_TICKET_DEPT as USERS(ID) references TICKET_TEAM_DEPT(USER_ID),
 		EMAILS_TO_OPPORTUNITY as EMAIL_ANALYTICS(OPPORTUNITY_ID) references OPPORTUNITIES(ID),
 		EMAILS_TO_REP as EMAIL_ANALYTICS(REP_USER_ID) references USERS(ID),
+		TASKS_TO_OPPORTUNITY as SALESFORCE_TASKS(WHAT_ID) references OPPORTUNITIES(ID),
+		TASKS_TO_OWNER as SALESFORCE_TASKS(OWNER_ID) references USERS(ID),
 		CALL_TO_OPPORTUNITY as CALL_ACTIVITY(OPPORTUNITY_ID) references OPPORTUNITIES(ID),
 		CALL_TO_USER as CALL_ACTIVITY(AGENT_OWNER_ID) references USERS(ID)
 	)
@@ -61,6 +81,8 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		OPPORTUNITIES.CREATED_QUARTER as DATE_TRUNC('QUARTER', opportunities.CREATED_DATE) with synonyms=('creation quarter','opened quarter') comment='Quarter when the opportunity was created',
 		OPPORTUNITIES.IS_CLOSED as opportunities.IS_CLOSED with synonyms=('closed status') comment='Whether the opportunity is closed (won or lost)',
 		OPPORTUNITIES.IS_WON as opportunities.IS_WON with synonyms=('won status') comment='Whether the opportunity was won',
+		OPPORTUNITIES.PRIMARY_OBJECTION as opportunities.OBJECTIONS_C with synonyms=('objection','loss reason','why lost','closed lost reason','primary objection') comment='Primary objection or reason the deal was lost. Top values: Neglect Meter, Season Over, Bad Contact/No Response, Financial, Not a Fan, Too Far to Drive, Schedule/Time, Working with another rep. NULL if not recorded.',
+		OPPORTUNITIES.SECONDARY_OBJECTION as opportunities.SECONDARY_OBJECTIONS_C with synonyms=('secondary objection','objection detail','loss detail','secondary reason') comment='Secondary objection providing additional detail on why the deal was lost. Examples: Never Answered, Season Over, Bad Phone Number, Not Interested, Stadium location. NULL if not recorded.',
 		DEAL_HEALTH.HEALTH_CATEGORY as deal_health.HEALTH_CATEGORY with synonyms=('health status','deal health','risk level') comment='Health category: Healthy, At Risk, or Critical',
 		DEAL_HEALTH.IS_AT_RISK as (deal_health.HEALTH_CATEGORY IN ('At Risk', 'Critical')) with synonyms=('at risk flag','risky deals') comment='Boolean flag for at-risk opportunities',
 		ACTIVITY_METRICS.ENGAGEMENT_LEVEL as activity_metrics.ENGAGEMENT_LEVEL with synonyms=('activity level','engagement score') comment='Engagement level: High, Medium, or Low',
@@ -96,6 +118,14 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		EMAIL_ANALYTICS.EMAIL_SENT_CATEGORY as email_analytics.SENTIMENT_CATEGORY with synonyms=('email tone','email sentiment') comment='Sentiment category of this email: Positive, Neutral, Slightly Negative, or Negative',
 		EMAIL_ANALYTICS.EMAIL_OPP_NAME as email_analytics.OPPORTUNITY_NAME with synonyms=('related opportunity','email opportunity') comment='Name of the opportunity this email is associated with',
 		EMAIL_ANALYTICS.EMAIL_SUBJECT as email_analytics.SUBJECT with synonyms=('email subject','subject line') comment='Subject line of the email',
+		SALESFORCE_TASKS.TASK_SUBJECT as salesforce_tasks.SUBJECT with synonyms=('task name','task title','task subject') comment='Subject/title of the Salesforce task',
+		SALESFORCE_TASKS.TASK_STATUS as salesforce_tasks.STATUS with synonyms=('task status','completion status') comment='Task status: Completed, In Progress, Not Started',
+		SALESFORCE_TASKS.TASK_TYPE as salesforce_tasks.TYPE with synonyms=('task type','activity type','call task','meeting task') comment='Type of task: Call, Email, Meeting, Task',
+		SALESFORCE_TASKS.TASK_PRIORITY as salesforce_tasks.PRIORITY with synonyms=('task priority','urgency','high priority tasks') comment='Priority level of the task: High, Normal, Low',
+		SALESFORCE_TASKS.TASK_DUE_DATE as salesforce_tasks.ACTIVITY_DATE with synonyms=('due date','task due date','activity date','scheduled date','when due') comment='Scheduled due date for the task. This is a DATE field — use direct date comparisons, not TIMESTAMP casting.',
+		SALESFORCE_TASKS.TASK_IS_CLOSED as salesforce_tasks.IS_CLOSED with synonyms=('task closed','completed flag','is complete') comment='Whether the task is closed/completed (boolean)',
+		SALESFORCE_TASKS.TASK_CALL_DISPOSITION as salesforce_tasks.CALL_DISPOSITION with synonyms=('task call outcome','task disposition','salesforce task result') comment='Call disposition/outcome for phone call type tasks (Salesforce Task field)',
+		SALESFORCE_TASKS.TASK_DESCRIPTION as salesforce_tasks.DESCRIPTION with synonyms=('task notes','task details','task description','task body') comment='Detailed description or notes entered on the task',
 		CALL_ACTIVITY.CALL_DIRECTION as CALL_DIRECTION with synonyms=('call type','direction','inbound','outbound') comment='Whether the call was Inbound or Outbound. Standardized with INITCAP.',
 		CALL_ACTIVITY.CALL_SOURCE as CALL_SOURCE with synonyms=('call system','contact center','zoom phone') comment='Source system: SESSION_HISTORY (Zoom Contact Center) or ZOOM_CALL_LOG (Zoom Phone). Use to distinguish call origin.',
 		CALL_ACTIVITY.CALL_CHANNEL as CALL_CHANNEL comment='Communication channel used (Voice, etc.)',
@@ -180,6 +210,7 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		EMAIL_ANALYTICS.AVG_RESPONSE_MINUTES as AVG(email_analytics.email_response_minutes) with synonyms=('average response time','mean response time','avg reply time') comment='Average response time in minutes for outbound emails that received a reply within 30 days',
 		EMAIL_ANALYTICS.MEDIAN_RESPONSE_MINUTES as MEDIAN(email_analytics.email_response_minutes) with synonyms=('median response time','typical response time') comment='Median response time in minutes — more representative than average as it ignores outliers',
 		EMAIL_ANALYTICS.RESPONSE_RATE as (COUNT(CASE WHEN email_analytics.email_response_bucket != 'No Response' AND email_analytics.email_dir = 'Outbound' THEN 1 END) * 100.0) / NULLIF(COUNT(CASE WHEN email_analytics.email_dir = 'Outbound' THEN 1 END), 0) with synonyms=('reply rate','email response rate','response percentage') comment='Percentage of outbound emails that received a response within 30 days',
+		SALESFORCE_TASKS.TASK_COUNT as COUNT(salesforce_tasks.ID) comment='Total number of Salesforce tasks',
 		CALL_ACTIVITY.TOTAL_CALLS as COUNT(SESSION_ID) with synonyms=('call count','number of calls') comment='Total number of calls',
 		CALL_ACTIVITY.INBOUND_CALLS as SUM(CASE WHEN CALL_DIRECTION = 'Inbound' THEN 1 ELSE 0 END) with synonyms=('calls received','incoming calls') comment='Number of inbound calls',
 		CALL_ACTIVITY.OUTBOUND_CALLS as SUM(CASE WHEN CALL_DIRECTION = 'Outbound' THEN 1 ELSE 0 END) with synonyms=('calls made','dials','outgoing calls') comment='Number of outbound calls',
@@ -193,8 +224,11 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CALL_ACTIVITY.NOTE_LOGGING_RATE as ROUND(SUM(CASE WHEN CALL_NOTES IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(SESSION_ID), 0), 1) with synonyms=('disposition rate','logging compliance','logging rate') comment='Percentage of calls with notes logged',
 		CALL_ACTIVITY.CALLS_LINKED_TO_OPPORTUNITY as SUM(CASE WHEN OPPORTUNITY_ID IS NOT NULL THEN 1 ELSE 0 END) with synonyms=('attributed calls','linked calls') comment='Number of calls linked to an opportunity'
 	)
-	comment='Semantic view for CRM sales intelligence with Customer 360, Email Analytics, and Call Activity - enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call volume, talk time, and inbound/outbound call metrics validated against Tableau dashboard.'
-	ai_sql_generation $$
+	filters (
+		CURRENT_RECORDS_ONLY as OPPORTUNITIES.SYSTEM_CURRENT_FLAG = 'Y' comment='Filter to current SCD Type 2 records only — always apply on opportunity queries'
+	)
+	comment='Semantic view for CRM sales intelligence — enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call activity metrics by rep and date, individual Salesforce task queries by rep, due date, and status, and closed lost objection/loss reason analysis.'
+	ai_sql_generation $
     When generating SQL:
     1. Always filter for SYSTEM_CURRENT_FLAG = 'Y' on opportunities table to get current records only
     2. CRITICAL DATE FILTERING - CREATED_DATE, CLOSE_DATE, and MESSAGE_DATE are TIMESTAMP_TZ fields. NEVER use DATE_TRUNC(field) = 'date-string' as it fails on timestamp comparison. Always use range-based filtering:
@@ -229,12 +263,22 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     26. When filtering emails by date, use email_analytics.email_date with range-based filtering (same rules as rule 2)
     27. For call activity questions (call counts, talk time, rep call volume), use the CALL_ACTIVITY table directly. TALK_TIME_SECONDS matches the Tableau dashboard metric. DURATION_SECONDS is total call time including ring/wait.
     28. When filtering calls by date, CALL_START_TIME is a TIMESTAMP in Eastern Time. Use range-based filtering (same rules as rule 2): CALL_START_TIME >= DATE_TRUNC('MONTH', CURRENT_DATE()) AND CALL_START_TIME < DATEADD('MONTH', 1, DATE_TRUNC('MONTH', CURRENT_DATE()))
-    29. To match dashboard call counts, filter IS_ACTIVE_SALES_REP = TRUE and CALL_DIRECTION IN ('Inbound', 'Outbound') to exclude internal and null-direction calls. Filter by AGENT_NAME for rep-specific queries.
+    29. CRITICAL: ALL call count queries MUST filter IS_ACTIVE_SALES_REP = TRUE and CALL_DIRECTION IN ('Inbound', 'Outbound'). NEVER omit these filters. T_CALL_ACTIVITY uses a LEFT JOIN for Session History — records where the agent email did not match an active sales rep are still inserted with IS_ACTIVE_SALES_REP = FALSE, and their AGENT_NAME is still populated from Zoom session data. Without IS_ACTIVE_SALES_REP = TRUE, rep-specific queries (AGENT_NAME ILIKE) will include these orphaned records and overstate counts by 2–6x. Filter by AGENT_NAME for rep-specific queries.
     30. CALL_SOURCE distinguishes Contact Center (SESSION_HISTORY) from Zoom Phone (ZOOM_CALL_LOG). Most reps have calls in both sources — do not filter by source unless the user specifically asks.
-  $$
-	ai_question_categorization $$
+    31. TASK QUERIES — salesforce_tasks.ACTIVITY_DATE is a DATE field (not TIMESTAMP). Use direct date comparisons only — do NOT cast to TIMESTAMP:
+        - For "last week" (previous calendar week, Sun–Sat): ACTIVITY_DATE >= DATEADD('week', -1, DATE_TRUNC('week', CURRENT_DATE())) AND ACTIVITY_DATE < DATE_TRUNC('week', CURRENT_DATE())
+        - For "this week": ACTIVITY_DATE >= DATE_TRUNC('week', CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD('week', 1, DATE_TRUNC('week', CURRENT_DATE()))
+        - For "today": ACTIVITY_DATE = CURRENT_DATE()
+        - For "overdue" (past due and not yet closed): ACTIVITY_DATE < CURRENT_DATE() AND salesforce_tasks.IS_CLOSED = FALSE
+        - For "next 7 days": ACTIVITY_DATE > CURRENT_DATE() AND ACTIVITY_DATE <= DATEADD('day', 7, CURRENT_DATE())
+    32. When filtering tasks by rep name, join SALESFORCE_TASKS to USERS via the TASKS_TO_OWNER relationship and filter using: users.NAME ILIKE '%rep name%'
+    33. When asked to sort or list tasks by opportunity revenue, join SALESFORCE_TASKS to OPPORTUNITIES via the TASKS_TO_OPPORTUNITY relationship and ORDER BY opportunities.AMOUNT DESC NULLS LAST. Tasks where WHAT_ID IS NULL (no linked opportunity) should appear last.
+    34. For task listing queries, always include these columns in the output: salesforce_tasks.SUBJECT, salesforce_tasks.ACTIVITY_DATE, salesforce_tasks.STATUS, salesforce_tasks.PRIORITY, and the linked opportunity NAME and AMOUNT where available.
+    35. When asked about loss reasons, why deals were lost, objections, or closed lost analysis, use the PRIMARY_OBJECTION (OBJECTIONS_C) and SECONDARY_OBJECTION (SECONDARY_OBJECTIONS_C) dimensions on the OPPORTUNITIES table. Always filter IS_CLOSED = TRUE AND IS_WON = FALSE when analyzing loss reasons. Note: many older records have NULL objections — filter PRIMARY_OBJECTION IS NOT NULL to exclude unclassified records unless the user wants to see the full picture. Top objection values: Neglect Meter, Season Over, Bad Contact/No Response, Financial, Not a Fan, Too Far to Drive, Schedule/Time, Working with another rep.
+  $
+	ai_question_categorization $
     Question Classification Rules:
-    
+
     ANSWERABLE questions about:
     - Pipeline value, stage, or close dates
     - Deal health, risk levels, or engagement
@@ -252,14 +296,21 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     - Revenue by ticket type (season tickets, single game, suite, group)
     - Customer recency and engagement patterns
     - Corporate partnership pipeline and performance
-    - Call volume, inbound/outbound call counts by rep or department
-    - Talk time, average call duration, total call minutes
-    - Missed call rates, note logging rates
-    - Call activity trends by week, month, or date range
-    
+    - Call activity: total calls, inbound vs outbound, talk time, call duration by rep
+    - Call notes and what was discussed on calls
+    - Missed calls, note logging rates, calls linked to opportunities
+    - Weekly and monthly call trends by rep or team
+    - Salesforce tasks by rep name, due date, status, type, or priority
+    - Tasks due last week, this week, today, or overdue
+    - Task lists sorted by linked opportunity revenue
+    - Pending, completed, or overdue task counts by rep
+    - Loss reasons, objections, why deals were closed lost
+    - Objection breakdown by rep, department, or time period
+    - Primary and secondary objection analysis
+
     CLARIFICATION NEEDED for vague questions like:
     - Show me deals without time frame or filters
     - How are we doing without specific metrics
     - Show me customers without segment or tier filter
     Ask user to specify: which metric, which time period, or which segment
-  $$;
+  $;
