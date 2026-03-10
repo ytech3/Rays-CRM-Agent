@@ -5,50 +5,52 @@ Warehouse: TBRDP_DW_CORTEX_XS_WH
 ARCHITECTURE — Streams + Tasks (rebuilt Feb 17-18, 2026 after $25K/week Dynamic Table cost crisis):
 Permanent Data Tables:
 
-T_EMAIL_ENRICHED (~98K rows) — emails with AI sentiment, topic, signal, summary via llama3.1-70b
-T_OPPORTUNITY_ACTIVITY_METRICS (22,787 rows) — email/call/task counts, engagement levels, ghosting flags per opportunity
-T_DEAL_HEALTH_SCORE (22,787 rows) — AI health scores (0-100), categories (Healthy/At Risk/Critical), deal assessments
-T_CUSTOMER_360 (371,485 rows) — unified customer profiles with LTV, revenue tiers, churn risk, upsell flags, ticket purchase history
-T_EMAIL_ANALYTICS (100,900 rows) — individual email records with direction, rep attribution, response times, time-of-day buckets, sentiment
+T_EMAIL_ENRICHED (~105K rows) — emails with AI sentiment, topic, signal, summary via llama3.1-70b
+T_OPPORTUNITY_ACTIVITY_METRICS (~22,787 rows) — email/call/task counts, engagement levels, ghosting flags per opportunity
+T_DEAL_HEALTH_SCORE (~34K rows) — AI health scores (0-100), categories (Healthy/At Risk/Critical), deal assessments
+T_CUSTOMER_360 (~371,485 rows) — unified customer profiles with LTV, revenue tiers, churn risk, upsell flags, ticket purchase history
+T_EMAIL_ANALYTICS (~101K rows) — individual email records with direction, rep attribution, response times, time-of-day buckets, sentiment
+T_CALL_ACTIVITY (growing, ~23K+) — Zoom call records from Session History + Call Log, deduped by session_id
 T_TICKET_TEAM_DEPARTMENT_MAPPING (23 reps) — 5 departments: TICKET_SALES (7 Group AEs), TICKET_SERVICE (4), TICKET_MEMBER_AE (2), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6)
-T_EMAIL_SEARCH_SOURCE — staging for email search (replaced by direct view)
-T_OPPORTUNITY_SEARCH_SOURCE — staging for opportunity search (replaced by direct view)
 
-Streams (4 active, append-only):
+Streams (5 active, append-only):
 
 STM_NEW_EMAILS → V_ODS_SALESFORCE_CRM_EMAIL_MESSAGE
 STM_OPPORTUNITY_CHANGES → V_ODS_SALESFORCE_OPPORTUNITY
 STM_CALL_LOG_CHANGES → V_ODS_SALESFORCE_CRM_ZVC_ZOOM_CALL_LOG_C
+STM_SESSION_HISTORY_CHANGES → V_ODS_SALESFORCE_CRM_ZVC_SESSION_HISTORY_C
 STM_TASK_CHANGES → V_ODS_SALESFORCE_TASK
 
-Task DAG (5 tasks, stream-triggered every 2 hours):
+Task DAG (6 tasks, stream-triggered every 2 hours) + 1 independent health check:
 
 TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA condition, LIMIT 500)
+├── TSK_REFRESH_ACTIVITY_METRICS (child, pure SQL)
+├── TSK_REFRESH_DEAL_HEALTH (grandchild, 1 AI call, changed-only filter via LEFT JOIN)
+├── TSK_REFRESH_CUSTOMER_360 (grandchild, pure SQL)
+├── TSK_REFRESH_EMAIL_ANALYTICS (grandchild, pure SQL, once-daily via timestamp check)
+└── TSK_REFRESH_CALL_ACTIVITY (child, pure SQL, once-daily via timestamp check)
 
-TSK_REFRESH_ACTIVITY_METRICS (child, pure SQL)
+TSK_CRM_AGENT_HEALTH_CHECK (independent, daily 7am ET, emails alert if any table is stale)
 
-TSK_REFRESH_DEAL_HEALTH (grandchild, 1 AI call, changed-only filter ~200 opps)
-TSK_REFRESH_CUSTOMER_360 (grandchild, pure SQL)
-TSK_REFRESH_EMAIL_ANALYTICS (grandchild, pure SQL, once-daily via timestamp check)
-
-Cortex Search Services (2 active):
+Cortex Search Services (3 active):
 
 EMAIL_SEARCH_SERVICE — reads from V_EMAIL_SEARCH_SOURCE view on T_EMAIL_ENRICHED, 4-hour lag, snowflake-arctic-embed-l-v2.0
+CALL_SEARCH_SERVICE — reads from V_CALL_SEARCH_SOURCE view on T_CALL_ACTIVITY, 1-day lag, snowflake-arctic-embed-l-v2.0
 OPPORTUNITY_SEARCH_SERVICE — reads from V_OPPORTUNITY_CONTEXT_SEARCH view on V_ODS_SALESFORCE_OPPORTUNITY + T_DEAL_HEALTH_SCORE, 6-hour lag
 
 Semantic View: SV_CRM_SALES_INTELLIGENCE
 
-7 logical tables: OPPORTUNITIES, DEAL_HEALTH, ACTIVITY_METRICS, USERS, TICKET_TEAM_DEPT, CUSTOMER_360, EMAIL_ANALYTICS
+8 logical tables: OPPORTUNITIES, DEAL_HEALTH, ACTIVITY_METRICS, USERS, TICKET_TEAM_DEPT, CUSTOMER_360, EMAIL_ANALYTICS, CALL_ACTIVITY
 Named filter: CURRENT_RECORDS_ONLY (SYSTEM_CURRENT_FLAG = 'Y') on OPPORTUNITIES
-Custom SQL generation rules including critical date range filtering (never DATE_TRUNC = string), department code mappings, email analytics routing
-3 verified queries for rep opportunity counts and department pipeline comparison
+30 ai_sql_generation rules including critical date range filtering (never DATE_TRUNC = string), department code mappings, email analytics routing, call query filters (IS_ACTIVE_SALES_REP, CALL_DIRECTION)
 ai_sql_generation and ai_question_categorization in $$ blocks
 
-ARM Agent: 3 tools connected:
+ARM Agent: 4 tools connected:
 
-Cortex Analyst → SV_CRM_SALES_INTELLIGENCE
-Cortex Search → EMAIL_SEARCH_SERVICE
-Cortex Search → OPPORTUNITY_SEARCH_SERVICE
+CRM_Analytics — Cortex Analyst → SV_CRM_SALES_INTELLIGENCE (structured SQL queries)
+Email_Search — Cortex Search → EMAIL_SEARCH_SERVICE (semantic search across 105K+ emails)
+Call_Search — Cortex Search → CALL_SEARCH_SERVICE (semantic search across 23K+ call records)
+Opportunity_Search — Cortex Search → OPPORTUNITY_SEARCH_SERVICE (semantic search across 34K+ opportunities)
 
 Cost Profile: ~3-6/day ($90-180/month) vs. old $3,500/day. 5 layers of cost protection: stream consumption, SYSTEM
 STREAM_HAS_DATA, NOT EXISTS guards, LIMIT 500, changed-only scoring.
@@ -60,6 +62,9 @@ Cortex Search Services can read directly from views (no staging table needed if 
 WHEN clause on child tasks only supports SYSTEM$STREAM_HAS_DATA (no subqueries) — use BEGIN/IF for daily-only logic
 Timestamp fields (CREATED_DATE, CLOSE_DATE, MESSAGE_DATE) require range-based filtering, never DATE_TRUNC = string comparison
 CREATE OR REPLACE SEMANTIC VIEW wipes named filters and verified queries — must re-add in Snowsight editor after
+Snowflake does NOT support correlated subqueries inside CTE WHERE clauses — use LEFT JOIN instead (discovered Mar 10, 2026 in TSK_REFRESH_DEAL_HEALTH)
+NEVER run CREATE OR REPLACE TABLE T_CALL_ACTIVITY — wipes change tracking and orphans consumed stream records
+Snowflake task ERROR_INTEGRATION only supports cloud queues (SNS/Event Grid/Pub/Sub), NOT email — use SYSTEM$SEND_EMAIL for email alerts
 
 
 **Tampa Bay Rays CRM Intelligence Platform**  
@@ -73,9 +78,10 @@ Schema: `IM_RPT`
 This document provides comprehensive schema definitions for all data sources used in the ARM Agent (Account & Relationship Management Agent) project. The ARM Agent is a CRM Intelligence Platform that enriches Salesforce data with AI-powered sentiment analysis, deal health scoring, and natural language search capabilities.
 
 ### Platform Statistics
-- **Email Records**: 90,000+
-- **Opportunities**: 22,000+
+- **Email Records**: 105,000+
+- **Opportunities**: 34,000+
 - **Customer Records**: 371,485
+- **Call Records**: 23,000+
 - **Platinum Customers**: 398 (driving $64.2M in revenue)
 
 ### Core Architecture
@@ -83,7 +89,7 @@ This document provides comprehensive schema definitions for all data sources use
 - **AI Services**: Cortex AI (COMPLETE, CLASSIFY_TEXT, SENTIMENT)
 - **Models**: Llama 3.1-8b
 - **Processing**: Streams + Tasks (incremental, every 2 hours)
-- **Search**: Cortex Search Services (EMAIL_SEARCH_SERVICE, OPPORTUNITY_SEARCH_SERVICE)
+- **Search**: Cortex Search Services (EMAIL_SEARCH_SERVICE, CALL_SEARCH_SERVICE, OPPORTUNITY_SEARCH_SERVICE)
 - **Query Interface**: Semantic Views (SV_CRM_SALES_INTELLIGENCE)
 - **Agent Model**: Claude Sonnet 4
 

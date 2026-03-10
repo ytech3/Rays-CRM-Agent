@@ -34,7 +34,7 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 | `T_EMAIL_ENRICHED` | ~98K | Emails with AI sentiment, topic, signal, summary (llama3.1-70b) |
 | `T_EMAIL_ANALYTICS` | ~101K | Email records with direction, rep attribution, response times, sentiment |
 | `T_OPPORTUNITY_ACTIVITY_METRICS` | ~22,787 | Email/call/task counts, engagement levels, ghosting flags per opportunity |
-| `T_DEAL_HEALTH_SCORE` | ~22,787 | AI health scores (0–100), categories (Healthy/At Risk/Critical) |
+| `T_DEAL_HEALTH_SCORE` | ~34K | AI health scores (0–100), categories (Healthy/At Risk/Critical) |
 | `T_CUSTOMER_360` | ~371,485 | Unified customer profiles with LTV, revenue tiers, churn risk, upsell flags |
 | `T_CALL_ACTIVITY` | Growing | Zoom call records from Session History + Call Log, deduped by session_id |
 | `T_TICKET_TEAM_DEPARTMENT_MAPPING` | 23 reps | 5 departments: TICKET_SALES (7), TICKET_SERVICE (4), TICKET_MEMBER_AE (2), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6) |
@@ -131,6 +131,7 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 - Cortex Search Services require VARCHAR columns — extract JSON fields to VARCHAR before indexing
 - `WHEN` clause on child tasks only supports `SYSTEM$STREAM_HAS_DATA` — use `BEGIN/IF` blocks for more complex daily-only logic
 - Department codes in semantic view queries: `TICKET_TSR`, `TICKET_SALES`, `TICKET_SERVICE`, `TICKET_MEMBER_AE`, `CORPORATE_PARTNERSHIP_SALES`
+- **Snowflake does not support correlated subqueries inside CTE WHERE clauses** — use LEFT JOIN instead. Example: the `TSK_REFRESH_DEAL_HEALTH` changed-only filter originally used `(SELECT tgt2.SCORING_TIMESTAMP FROM ... WHERE tgt2.OPPORTUNITY_ID = oam.OPPORTUNITY_ID)` which silently returned 0 rows. Fixed March 10, 2026 by replacing with `LEFT JOIN T_DEAL_HEALTH_SCORE dh ON oam.OPPORTUNITY_ID = dh.OPPORTUNITY_ID`.
 
 ## Monitoring & Health Check
 
