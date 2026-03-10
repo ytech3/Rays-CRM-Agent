@@ -224,9 +224,8 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CALL_ACTIVITY.NOTE_LOGGING_RATE as ROUND(SUM(CASE WHEN CALL_NOTES IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(SESSION_ID), 0), 1) with synonyms=('disposition rate','logging compliance','logging rate') comment='Percentage of calls with notes logged',
 		CALL_ACTIVITY.CALLS_LINKED_TO_OPPORTUNITY as SUM(CASE WHEN OPPORTUNITY_ID IS NOT NULL THEN 1 ELSE 0 END) with synonyms=('attributed calls','linked calls') comment='Number of calls linked to an opportunity'
 	)
-	filters (
-		CURRENT_RECORDS_ONLY as OPPORTUNITIES.SYSTEM_CURRENT_FLAG = 'Y' comment='Filter to current SCD Type 2 records only — always apply on opportunity queries'
-	)
+	-- NOTE: After running this CREATE OR REPLACE, re-add named filter in Snowsight editor:
+	--   CURRENT_RECORDS_ONLY → SYSTEM_CURRENT_FLAG = 'Y' on OPPORTUNITIES table
 	comment='Semantic view for CRM sales intelligence — enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call activity metrics by rep and date, individual Salesforce task queries by rep, due date, and status, and closed lost objection/loss reason analysis.'
 	ai_sql_generation $
     When generating SQL:
