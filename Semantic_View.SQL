@@ -227,7 +227,7 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 	-- NOTE: After running this CREATE OR REPLACE, re-add named filter in Snowsight editor:
 	--   CURRENT_RECORDS_ONLY → SYSTEM_CURRENT_FLAG = 'Y' on OPPORTUNITIES table
 	comment='Semantic view for CRM sales intelligence — enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call activity metrics by rep and date, individual Salesforce task queries by rep, due date, and status, and closed lost objection/loss reason analysis.'
-	ai_sql_generation $
+	ai_sql_generation $$
     When generating SQL:
     1. Always filter for SYSTEM_CURRENT_FLAG = 'Y' on opportunities table to get current records only
     2. CRITICAL DATE FILTERING - CREATED_DATE, CLOSE_DATE, and MESSAGE_DATE are TIMESTAMP_TZ fields. NEVER use DATE_TRUNC(field) = 'date-string' as it fails on timestamp comparison. Always use range-based filtering:
@@ -274,8 +274,8 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     33. When asked to sort or list tasks by opportunity revenue, join SALESFORCE_TASKS to OPPORTUNITIES via the TASKS_TO_OPPORTUNITY relationship and ORDER BY opportunities.AMOUNT DESC NULLS LAST. Tasks where WHAT_ID IS NULL (no linked opportunity) should appear last.
     34. For task listing queries, always include these columns in the output: salesforce_tasks.SUBJECT, salesforce_tasks.ACTIVITY_DATE, salesforce_tasks.STATUS, salesforce_tasks.PRIORITY, and the linked opportunity NAME and AMOUNT where available.
     35. When asked about loss reasons, why deals were lost, objections, or closed lost analysis, use the PRIMARY_OBJECTION (OBJECTIONS_C) and SECONDARY_OBJECTION (SECONDARY_OBJECTIONS_C) dimensions on the OPPORTUNITIES table. Always filter IS_CLOSED = TRUE AND IS_WON = FALSE when analyzing loss reasons. Note: many older records have NULL objections — filter PRIMARY_OBJECTION IS NOT NULL to exclude unclassified records unless the user wants to see the full picture. Top objection values: Neglect Meter, Season Over, Bad Contact/No Response, Financial, Not a Fan, Too Far to Drive, Schedule/Time, Working with another rep.
-  $
-	ai_question_categorization $
+  $$
+	ai_question_categorization $$
     Question Classification Rules:
 
     ANSWERABLE questions about:
@@ -312,4 +312,4 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     - How are we doing without specific metrics
     - Show me customers without segment or tier filter
     Ask user to specify: which metric, which time period, or which segment
-  $;
+  $$;
