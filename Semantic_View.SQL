@@ -15,12 +15,27 @@ WHERE SYSTEM_CURRENT_FLAG = 'Y'
   AND IS_DELETED = FALSE
 QUALIFY ROW_NUMBER() OVER (PARTITION BY ID ORDER BY SYSTEM_VERSION DESC) = 1;
 
+-- =====================================================
+-- Current-record view for V_ODS_SALESFORCE_USER
+-- V_ODS_SALESFORCE_USER is SCD Type 2 — each user has
+-- multiple historical records. Without filtering to
+-- SYSTEM_CURRENT_FLAG = 'Y', any JOIN to this view
+-- causes a fan-out that multiplies row counts (~22x).
+-- The semantic view MUST reference this filtered view
+-- instead of the raw source to prevent inflated counts
+-- on call activity, email, task, and opportunity queries.
+-- =====================================================
+CREATE OR REPLACE VIEW TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_USER_CURRENT AS
+SELECT *
+FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_USER
+WHERE SYSTEM_CURRENT_FLAG = 'Y';
+
 CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 	tables (
 		OPPORTUNITIES as TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY primary key (ID) with synonyms=('deals','pipeline','sales opportunities') comment='Sales opportunities with revenue, stage, and close dates',
 		DEAL_HEALTH as TBRDP_DW_PROD.IM_RPT.T_DEAL_HEALTH_SCORE primary key (OPPORTUNITY_ID) with synonyms=('health scores','deal assessment') comment='AI-generated health scores and risk assessments for opportunities',
 		ACTIVITY_METRICS as TBRDP_DW_PROD.IM_RPT.T_OPPORTUNITY_ACTIVITY_METRICS primary key (OPPORTUNITY_ID) with synonyms=('engagement','activities','interactions') comment='Aggregated email, call, and task metrics per opportunity',
-		USERS as TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_USER primary key (ID) with synonyms=('sales reps','account executives','owners') comment='Sales representative details and team information',
+    USERS as TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_USER_CURRENT primary key (ID) with synonyms=('sales reps','account executives','owners') comment='Sales representative details — pre-filtered to current SCD2 records only (SYSTEM_CURRENT_FLAG=Y) to prevent join fan-out',
 		TICKET_TEAM_DEPT as TBRDP_DW_PROD.IM_RPT.T_TICKET_TEAM_DEPARTMENT_MAPPING primary key (USER_ID) with synonyms=('ticket team','department classification','sales vs service','group AEs','SM AEs','TSRs','corporate partnerships') comment='Department classification for 23 reps across 5 teams: Ticket Sales Group AEs (7), Ticket Service (4), Ticket Member AEs (2), Ticket Sales Reps/TSRs (4), and Corporate Partnership Sales (6)',
 		CUSTOMER_360 as TBRDP_DW_PROD.IM_RPT.T_CUSTOMER_360 primary key (SF_ACCOUNT_ID) with synonyms=('customer intelligence','customer 360','customer profile','customer data','account intelligence','lifetime value','LTV','customer lifetime') comment='Unified customer view linking CRM opportunities to actual ticket purchases. Contains lifetime value, revenue tiers, conversion metrics, churn risk, and purchase history for 371K mapped customers.',
 		EMAIL_ANALYTICS as TBRDP_DW_PROD.IM_RPT.T_EMAIL_ANALYTICS primary key (EMAIL_ID) with synonyms=('emails','email activity','email metrics','email volume','outreach','communications','response times') comment='Individual email records with timestamps, direction, rep attribution, sentiment, response time calculations, and time-of-day analysis. Use for email volume counts, send time optimization, and response rate analysis.',
@@ -229,7 +244,7 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 	comment='Semantic view for CRM sales intelligence — enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call activity metrics by rep and date, individual Salesforce task queries by rep, due date, and status, and closed lost objection/loss reason analysis.'
 	ai_sql_generation $$
     When generating SQL:
-    1. Always filter for SYSTEM_CURRENT_FLAG = 'Y' on opportunities table to get current records only
+    1. Always filter for SYSTEM_CURRENT_FLAG = 'Y' on the OPPORTUNITIES table AND the USERS table to get current records only. The USERS table (V_SALESFORCE_USER_CURRENT) is already pre-filtered, but OPPORTUNITIES (V_ODS_SALESFORCE_OPPORTUNITY) still requires an explicit WHERE SYSTEM_CURRENT_FLAG = 'Y' in every query.
     2. CRITICAL DATE FILTERING - CREATED_DATE, CLOSE_DATE, and MESSAGE_DATE are TIMESTAMP_TZ fields. NEVER use DATE_TRUNC(field) = 'date-string' as it fails on timestamp comparison. Always use range-based filtering:
        - For this month: field >= DATE_TRUNC('MONTH', CURRENT_DATE()) AND field < DATEADD('MONTH', 1, DATE_TRUNC('MONTH', CURRENT_DATE()))
        - For this quarter: field >= DATE_TRUNC('QUARTER', CURRENT_DATE()) AND field < DATEADD('QUARTER', 1, DATE_TRUNC('QUARTER', CURRENT_DATE()))
@@ -262,7 +277,18 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     26. When filtering emails by date, use email_analytics.email_date with range-based filtering (same rules as rule 2)
     27. For call activity questions (call counts, talk time, rep call volume), use the CALL_ACTIVITY table directly. TALK_TIME_SECONDS matches the Tableau dashboard metric. DURATION_SECONDS is total call time including ring/wait.
     28. When filtering calls by date, CALL_START_TIME is a TIMESTAMP in Eastern Time. Use range-based filtering (same rules as rule 2): CALL_START_TIME >= DATE_TRUNC('MONTH', CURRENT_DATE()) AND CALL_START_TIME < DATEADD('MONTH', 1, DATE_TRUNC('MONTH', CURRENT_DATE()))
-    29. CRITICAL: ALL call count queries MUST filter IS_ACTIVE_SALES_REP = TRUE and CALL_DIRECTION IN ('Inbound', 'Outbound'). NEVER omit these filters. T_CALL_ACTIVITY uses a LEFT JOIN for Session History — records where the agent email did not match an active sales rep are still inserted with IS_ACTIVE_SALES_REP = FALSE, and their AGENT_NAME is still populated from Zoom session data. Without IS_ACTIVE_SALES_REP = TRUE, rep-specific queries (AGENT_NAME ILIKE) will include these orphaned records and overstate counts by 2–6x. Filter by AGENT_NAME for rep-specific queries.
+    29. CRITICAL — MANDATORY CALL FILTERS: Every query against CALL_ACTIVITY MUST include ALL of these filters:
+        a) IS_ACTIVE_SALES_REP = TRUE — excludes orphaned Zoom records not matched to a sales rep
+        b) CALL_DIRECTION IN ('Inbound', 'Outbound') — excludes system/internal records
+        Omitting these filters overstates call counts by 2–6x. When grouping by rep, use AGENT_NAME (not a JOIN to USERS). When the user asks for calls by direction, break out Inbound and Outbound separately.
+        Example correct call query:
+        SELECT AGENT_NAME, CALL_DIRECTION, COUNT(SESSION_ID) AS total_calls
+        FROM call_activity
+        WHERE IS_ACTIVE_SALES_REP = TRUE
+          AND CALL_DIRECTION IN ('Inbound', 'Outbound')
+          AND CALL_START_TIME >= [date_range_start]
+          AND CALL_START_TIME < [date_range_end]
+        GROUP BY AGENT_NAME, CALL_DIRECTION
     30. CALL_SOURCE distinguishes Contact Center (SESSION_HISTORY) from Zoom Phone (ZOOM_CALL_LOG). Most reps have calls in both sources — do not filter by source unless the user specifically asks.
     31. TASK QUERIES — salesforce_tasks.ACTIVITY_DATE is a DATE field (not TIMESTAMP). Use direct date comparisons only — do NOT cast to TIMESTAMP:
         - For "last week" (previous calendar week, Sun–Sat): ACTIVITY_DATE >= DATEADD('week', -1, DATE_TRUNC('week', CURRENT_DATE())) AND ACTIVITY_DATE < DATE_TRUNC('week', CURRENT_DATE())

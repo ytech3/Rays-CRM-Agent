@@ -302,7 +302,8 @@ BEGIN
           AND NOT EXISTS (
               SELECT 1 FROM TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY ca
               WHERE ca.session_id = sh.ID AND ca.call_source = 'SESSION_HISTORY'
-          );
+          )
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY sh.ID ORDER BY sh.SYSTEM_VERSION DESC) = 1;
 
         -- INSERT 2: New Zoom Call Log records
         INSERT INTO TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY
@@ -389,7 +390,8 @@ BEGIN
           AND NOT EXISTS (
               SELECT 1 FROM TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY ca
               WHERE ca.session_id = cl.ID AND ca.call_source = 'ZOOM_CALL_LOG'
-          );
+          )
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY cl.ID ORDER BY cl.SYSTEM_VERSION DESC) = 1;
 
     END IF;
 END;
