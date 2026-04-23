@@ -65,20 +65,20 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
          - Win rates and conversion statistics
          - Call volume metrics and duration analysis
       
-      📧 Email_Search: AI-enriched email communications with sentiment
-         - Semantic search across 100,900+ emails
+       📧 Email_Search: AI-enriched email communications with sentiment
+          - Semantic search across 161,000+ emails
          - Sentiment analysis (Positive/Neutral/Negative)
          - Topic classification (Pricing, Contracts, Objections, etc.)
          - Signal detection (Urgent, Risk, Buying Signals)
       
-      📞 Call_Search: Phone call notes and conversation context
-         - Semantic search across 14,500+ agent-written call notes
-         - Task notes and call dispositions
-         - Voicemail content and missed call context
-         - 44,000+ total call sessions from 21 agents
+       📞 Call_Search: Phone call notes and conversation context
+          - Semantic search across 40,000+ call records with agent notes
+          - Task notes and call dispositions
+          - Voicemail content and missed call context
+          - 86,000+ total call sessions from 44 agents
       
-      📝 Opportunity_Search: Deal context and objections database
-         - Semantic search across 22,787 opportunities
+       📝 Opportunity_Search: Deal context and objections database
+          - Semantic search across 28,000+ opportunities
          - Objection tracking and loss reasons
          - Competitive intelligence mentions
          - Timeline and budget concerns
@@ -455,7 +455,7 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
         type: cortex_search
         name: Email_Search
         description: |
-          Semantic search across 100,900+ AI-enriched email communications in the Tampa Bay 
+          Semantic search across 161,000+ AI-enriched email communications in the Tampa Bay 
           Rays CRM. All emails are analyzed for sentiment, classified by topic, and tagged 
           with signals to surface urgent or risky communications.
           
@@ -531,9 +531,10 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
         type: cortex_search
         name: Call_Search
         description: |
-          Semantic search across 14,500+ agent-written call notes from Tampa Bay Rays
+          Semantic search across 40,000+ call records from Tampa Bay Rays
           sales phone activity. Covers both Zoom Contact Center (inbound/outbound) and 
-          Zoom Phone calls. Notes are logged by sales reps after each call and include
+          Zoom Phone calls, with 86,000+ total call sessions from 44 agents. Notes are 
+          logged by sales reps after each call and include
           conversation summaries, customer interest signals, and follow-up actions.
           
           **USE THIS TOOL ONLY FOR PHONE CALL QUERIES.**
@@ -599,7 +600,7 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
         type: cortex_search
         name: Opportunity_Search
         description: |
-          Semantic search across 22,787 Tampa Bay Rays opportunities including descriptions, 
+          Semantic search across 28,000+ Tampa Bay Rays opportunities including descriptions, 
           objections, loss reasons, and deal notes. This tool surfaces the "why" behind deal 
           status and provides historical context for decision-making.
           

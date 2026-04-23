@@ -292,6 +292,7 @@ USING (
             ON oam.OPPORTUNITY_ID = dh.OPPORTUNITY_ID
         WHERE o.SYSTEM_CURRENT_FLAG = 'Y'
           AND o.IS_CLOSED = FALSE
+          AND o.STAGE_NAME IN ('Initial Conversation', 'In-Contact')
           -- ONLY opps where activity metrics are newer than last scoring
           AND oam.METRICS_TIMESTAMP > COALESCE(dh.SCORING_TIMESTAMP, '1900-01-01'::TIMESTAMP)
     )

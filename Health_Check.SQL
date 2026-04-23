@@ -50,7 +50,7 @@ CREATE OR REPLACE NOTIFICATION INTEGRATION CRM_AGENT_ALERTS
 CREATE OR REPLACE TASK TBRDP_DW_PROD.IM_RPT.TSK_CRM_AGENT_HEALTH_CHECK
     WAREHOUSE = TBRDP_DW_CORTEX_XS_WH
     SCHEDULE = 'USING CRON 0 7 * * * America/New_York'
-    COMMENT = 'Daily CRM Agent pipeline health check — alerts if any table is stale'
+    COMMENT = 'Daily CRM Agent pipeline health check — alerts if any table is stale or deal health distribution is skewed'
 AS
 DECLARE
     v_issues STRING DEFAULT '';
@@ -62,6 +62,9 @@ DECLARE
     v_customer_360_ts TIMESTAMP;
     v_threshold_2h TIMESTAMP;
     v_threshold_48h TIMESTAMP;
+    v_total_scored NUMBER;
+    v_critical_count NUMBER;
+    v_critical_pct NUMBER;
 BEGIN
     v_threshold_2h := DATEADD('HOUR', -26, CURRENT_TIMESTAMP());
     v_threshold_48h := DATEADD('HOUR', -48, CURRENT_TIMESTAMP());
@@ -110,6 +113,17 @@ BEGIN
         v_issues := :v_issues || '- T_CALL_ACTIVITY is stale (last: ' || :v_call_activity_ts::VARCHAR || ').\n';
     END IF;
 
+    -- Deal health distribution check — alert if Critical > 80%
+    SELECT COUNT(*) INTO :v_total_scored FROM TBRDP_DW_PROD.IM_RPT.T_DEAL_HEALTH_SCORE;
+    SELECT COUNT(*) INTO :v_critical_count FROM TBRDP_DW_PROD.IM_RPT.T_DEAL_HEALTH_SCORE WHERE HEALTH_CATEGORY = 'Critical';
+
+    IF (:v_total_scored > 0) THEN
+        v_critical_pct := ROUND(:v_critical_count * 100.0 / :v_total_scored, 1);
+        IF (:v_critical_pct > 80) THEN
+            v_issues := :v_issues || '- DEAL HEALTH DISTRIBUTION SKEWED: ' || :v_critical_pct::VARCHAR || '% Critical (' || :v_critical_count::VARCHAR || '/' || :v_total_scored::VARCHAR || ' deals). Scoring formula or stage filter may need review.\n';
+        END IF;
+    END IF;
+
     -- Log results
     CREATE TABLE IF NOT EXISTS TBRDP_DW_PROD.IM_RPT.T_CRM_AGENT_HEALTH_LOG (
         check_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
@@ -126,7 +140,7 @@ BEGIN
             'CRM_AGENT_ALERTS',
             'ytaketani@raysbaseball.com',
             'CRM Agent Health Alert - Action Required',
-            'The following CRM Agent components are stale:\n\n' || :v_issues ||
+            'The following CRM Agent components need attention:\n\n' || :v_issues ||
             '\nTo diagnose: SHOW TASKS IN SCHEMA TBRDP_DW_PROD.IM_RPT;\n' ||
             'To resume DAG: ALTER TASK TBRDP_DW_PROD.IM_RPT.TSK_ENRICH_NEW_EMAILS RESUME;'
         );

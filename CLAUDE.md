@@ -41,10 +41,10 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 | `T_EMAIL_ENRICHED` | ~161K | Emails with AI sentiment, topic, signal, summary (llama3.1-70b) |
 | `T_EMAIL_ANALYTICS` | ~163K | Email records with direction, rep attribution, response times, sentiment |
 | `T_OPPORTUNITY_ACTIVITY_METRICS` | ~43,801 | Email/call/task counts, engagement levels, ghosting flags per opportunity |
-| `T_DEAL_HEALTH_SCORE` | ~42,961 | AI health scores (0–100), categories (Healthy/At Risk/Critical) |
+| `T_DEAL_HEALTH_SCORE` | ~2,948 | AI health scores (0–100), categories (Healthy/At Risk/Critical). Only scores deals in 'Initial Conversation' or 'In-Contact' stages. |
 | `T_CUSTOMER_360` | ~437,461 | Unified customer profiles with LTV, revenue tiers, churn risk, upsell flags |
 | `T_CALL_ACTIVITY` | ~86,453 | Zoom call records from Session History + Call Log, deduped by session_id |
-| `T_TICKET_TEAM_DEPARTMENT_MAPPING` | 23 reps | 5 departments: TICKET_SALES (7), TICKET_SERVICE (4), TICKET_MEMBER_AE (2), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6) |
+| `T_TICKET_TEAM_DEPARTMENT_MAPPING` | 43 reps | 8 departments: TICKET_SALES (7), TICKET_SERVICE (5), TICKET_MEMBER_AE (4), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6), TICKET_LEADERSHIP (11), TICKET_INTERN (4), CALL_CENTER (2). USER_NAME column is VARCHAR(50). |
 
 ### Streams (5 active, append-only)
 
@@ -63,7 +63,7 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 ```
 TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA guard, LIMIT 500)
 ├── TSK_REFRESH_ACTIVITY_METRICS (child, pure SQL)
-├── TSK_REFRESH_DEAL_HEALTH (grandchild, AI call, changed-only ~200 opps)
+├── TSK_REFRESH_DEAL_HEALTH (grandchild, AI call, changed-only, stage filter: 'Initial Conversation' + 'In-Contact' only)
 ├── TSK_REFRESH_CUSTOMER_360 (grandchild, pure SQL)
 ├── TSK_REFRESH_EMAIL_ANALYTICS (grandchild, pure SQL, once-daily timestamp check)
 └── TSK_REFRESH_CALL_ACTIVITY (child, pure SQL, once-daily timestamp check)
@@ -111,12 +111,15 @@ Unions two Zoom data sources:
 
 ## Sales Team Structure
 
-5 departments across 23 reps:
+8 departments across 43 reps:
+- `TICKET_LEADERSHIP` — 11 reps (managers/directors who oversee staff)
 - `TICKET_SALES` — 7 Group AEs
-- `TICKET_SERVICE` — 4 reps
-- `TICKET_MEMBER_AE` — 2 reps
-- `TICKET_TSR` — 4 reps (Benjamin Knee, Alexa Linkchuck, Emily Prindiville, Torrey Pursel)
 - `CORPORATE_PARTNERSHIP_SALES` — 6 reps
+- `TICKET_SERVICE` — 5 reps
+- `TICKET_MEMBER_AE` — 4 reps
+- `TICKET_TSR` — 4 reps (Benjamin Knee, Alexa Linkchuck, Emily Prindiville, Torrey Pursel)
+- `TICKET_INTERN` — 4 reps
+- `CALL_CENTER` — 2 reps
 
 Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep profile ID for active sales reps: `00ecw000001t0rfAAA`.
 
@@ -126,7 +129,7 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 1. `SYSTEM$STREAM_HAS_DATA` — task only fires when changes exist
 2. `LIMIT 500` on email enrichment — caps AI calls per cycle
 3. `NOT EXISTS` guards — prevents duplicate inserts
-4. Changed-only scoring — deal health scores ~200 changed opps, not all 43K
+4. Changed-only scoring — deal health scores only changed opps in 'Initial Conversation' or 'In-Contact' stages
 5. Once-daily timestamp checks — call activity and email analytics skip if already run today
 
 **Historical warning**: Dynamic Tables with Cortex AI functions force full refresh and caused a $25K/week cost overrun. Never use Dynamic Tables for AI enrichment — use Streams + Tasks instead.
@@ -137,7 +140,7 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 - Never use `DATE_TRUNC = string` comparisons on timestamp fields — always use range-based filtering (`>= date AND < date + 1`)
 - Cortex Search Services require VARCHAR columns — extract JSON fields to VARCHAR before indexing
 - `WHEN` clause on child tasks only supports `SYSTEM$STREAM_HAS_DATA` — use `BEGIN/IF` blocks for more complex daily-only logic
-- Department codes in semantic view queries: `TICKET_TSR`, `TICKET_SALES`, `TICKET_SERVICE`, `TICKET_MEMBER_AE`, `CORPORATE_PARTNERSHIP_SALES`
+- Department codes in semantic view queries: `TICKET_TSR`, `TICKET_SALES`, `TICKET_SERVICE`, `TICKET_MEMBER_AE`, `CORPORATE_PARTNERSHIP_SALES`, `TICKET_LEADERSHIP`, `TICKET_INTERN`, `CALL_CENTER`
 - **Snowflake does not support correlated subqueries inside CTE WHERE clauses** — use LEFT JOIN instead. Example: the `TSK_REFRESH_DEAL_HEALTH` changed-only filter originally used `(SELECT tgt2.SCORING_TIMESTAMP FROM ... WHERE tgt2.OPPORTUNITY_ID = oam.OPPORTUNITY_ID)` which silently returned 0 rows. Fixed March 10, 2026 by replacing with `LEFT JOIN T_DEAL_HEALTH_SCORE dh ON oam.OPPORTUNITY_ID = dh.OPPORTUNITY_ID`.
 
 ## Monitoring & Health Check
@@ -145,7 +148,7 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 ### Automated Protection (deployed March 9, 2026)
 
 1. **Retry tolerance**: Root task `TSK_ENRICH_NEW_EMAILS` has `SUSPEND_TASK_AFTER_NUM_FAILURES = 3` — survives transient Cortex AI timeouts instead of dying on the first failure.
-2. **Daily health check**: `TSK_CRM_AGENT_HEALTH_CHECK` runs at 7am ET, checks freshness of all 6 permanent tables, and sends email via `CRM_AGENT_ALERTS` notification integration if anything is stale.
+2. **Daily health check**: `TSK_CRM_AGENT_HEALTH_CHECK` runs at 7am ET, checks freshness of all 6 permanent tables and deal health score distribution (alerts if Critical > 80%), sends email via `CRM_AGENT_ALERTS` notification integration if anything needs attention.
 3. **Audit log**: `T_CRM_AGENT_HEALTH_LOG` records every health check result (HEALTHY or UNHEALTHY with details).
 
 ### Freshness Thresholds
