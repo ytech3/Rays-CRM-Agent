@@ -8,16 +8,23 @@ This repository contains Snowflake SQL definitions for the **ARM Agent** (Accoun
 
 Target schema: `TBRDP_DW_PROD.IM_RPT`
 Warehouse: `TBRDP_DW_CORTEX_XS_WH`
-Agent model: Claude Sonnet 4
+Agent model: Claude Sonnet 4.5
 
 There are no build, lint, or test commands. Changes are deployed by executing SQL directly against Snowflake.
 
 ## Files
 
+- **Semantic_View.SQL** — Defines `SV_CRM_SALES_INTELLIGENCE`, the Snowflake Semantic View (10 logical tables) used by Cortex Analyst for natural-language SQL queries.
+- **Tasks.SQL** — Defines the 6-task DAG: root `TSK_ENRICH_NEW_EMAILS` (120-min), child tasks for activity metrics, deal health, customer 360, email analytics, and call activity. Also defines the 5 append-only streams.
+- **CUSTOMER_360.SQL** — Defines `T_CUSTOMER_360`, the unified customer profile table with LTV, revenue tiers, churn risk, and upsell flags. Refreshed by `TSK_REFRESH_CUSTOMER_360`.
 - **T_Call_Activity.SQL** — Defines `T_CALL_ACTIVITY`, a permanent table unioning Zoom Session History and Zoom Call Log call records. Also defines `TSK_REFRESH_CALL_ACTIVITY`, the incremental task that appends new records daily.
-- **Semantic_View.SQL** — Defines `SV_CRM_SALES_INTELLIGENCE`, the Snowflake Semantic View (8 logical tables) used by Cortex Analyst for natural-language SQL queries.
 - **Email_Analytics.SQL** — Defines `T_EMAIL_ANALYTICS`, a permanent table of individual email records with direction, rep attribution, response times, sentiment, and time-of-day buckets.
+- **Game_Attendance_Views.SQL** — Defines `V_CUSTOMER_GAME_ATTENDANCE` (aggregated per-customer) and `V_CUSTOMER_GAME_ATTENDANCE_DETAIL` (individual game records). Scan-based (IS_SCANNED=1) using V_FACT_INDIVIDUAL_SEAT_SALES joined to T_GAME_RESULTS. Covers 2023–2025 seasons.
+- **Source_Views.SQL** — Defines source views used by Cortex Search services: `V_EMAIL_SEARCH_SOURCE`, `V_CALL_SEARCH_SOURCE`, `V_OPPORTUNITY_CONTEXT_SEARCH`.
+- **Cortex_Search.SQL** — Defines the 3 Cortex Search services: EMAIL_SEARCH_SERVICE, CALL_SEARCH_SERVICE, OPPORTUNITY_SEARCH_SERVICE.
+- **STAFF_BUILDOUT.sql** — Defines `V_SALESFORCE_USER_CURRENT`, `V_SALESFORCE_TASKS_CURRENT`, and `T_TICKET_TEAM_DEPARTMENT_MAPPING` for rep attribution and team structure.
 - **Health_Check.SQL** — Defines `TSK_CRM_AGENT_HEALTH_CHECK` (daily 7am ET monitoring task), `CRM_AGENT_ALERTS` notification integration, `T_CRM_AGENT_HEALTH_LOG` audit table, manual health check queries, and emergency recovery procedures.
+- **MLB_UDF.sql** / **MLB_SCHEDULE_UDF.sql** — External API UDFs for MLB game results and schedule data.
 - **CRM Agent Config.yaml** — Cortex Agent configuration file defining the four tools (CRM Analytics, Email Search, Call Search, Opportunity Search) and system prompt.
 - **CRM_AGENT_FILES.md** — Comprehensive schema documentation for all source views and enriched tables.
 
@@ -31,12 +38,12 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 
 | Table | Rows | Description |
 |-------|------|-------------|
-| `T_EMAIL_ENRICHED` | ~98K | Emails with AI sentiment, topic, signal, summary (llama3.1-70b) |
-| `T_EMAIL_ANALYTICS` | ~101K | Email records with direction, rep attribution, response times, sentiment |
-| `T_OPPORTUNITY_ACTIVITY_METRICS` | ~22,787 | Email/call/task counts, engagement levels, ghosting flags per opportunity |
-| `T_DEAL_HEALTH_SCORE` | ~34K | AI health scores (0–100), categories (Healthy/At Risk/Critical) |
-| `T_CUSTOMER_360` | ~371,485 | Unified customer profiles with LTV, revenue tiers, churn risk, upsell flags |
-| `T_CALL_ACTIVITY` | Growing | Zoom call records from Session History + Call Log, deduped by session_id |
+| `T_EMAIL_ENRICHED` | ~161K | Emails with AI sentiment, topic, signal, summary (llama3.1-70b) |
+| `T_EMAIL_ANALYTICS` | ~163K | Email records with direction, rep attribution, response times, sentiment |
+| `T_OPPORTUNITY_ACTIVITY_METRICS` | ~43,801 | Email/call/task counts, engagement levels, ghosting flags per opportunity |
+| `T_DEAL_HEALTH_SCORE` | ~42,961 | AI health scores (0–100), categories (Healthy/At Risk/Critical) |
+| `T_CUSTOMER_360` | ~437,461 | Unified customer profiles with LTV, revenue tiers, churn risk, upsell flags |
+| `T_CALL_ACTIVITY` | ~86,453 | Zoom call records from Session History + Call Log, deduped by session_id |
 | `T_TICKET_TEAM_DEPARTMENT_MAPPING` | 23 reps | 5 departments: TICKET_SALES (7), TICKET_SERVICE (4), TICKET_MEMBER_AE (2), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6) |
 
 ### Streams (5 active, append-only)
@@ -74,7 +81,7 @@ TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA guard, LIM
 
 ### Semantic View (`SV_CRM_SALES_INTELLIGENCE`)
 
-8 logical tables: `OPPORTUNITIES`, `DEAL_HEALTH`, `ACTIVITY_METRICS`, `USERS`, `TICKET_TEAM_DEPT`, `CUSTOMER_360`, `EMAIL_ANALYTICS`, `CALL_ACTIVITY`
+10 logical tables: `OPPORTUNITIES`, `DEAL_HEALTH`, `ACTIVITY_METRICS`, `USERS`, `TICKET_TEAM_DEPT`, `CUSTOMER_360`, `EMAIL_ANALYTICS`, `CALL_ACTIVITY`, `GAME_ATTENDANCE`, `GAME_ATTENDANCE_DETAIL`
 
 Named filter: `CURRENT_RECORDS_ONLY` (`SYSTEM_CURRENT_FLAG = 'Y'`) on OPPORTUNITIES.
 
@@ -84,10 +91,10 @@ Named filter: `CURRENT_RECORDS_ONLY` (`SYSTEM_CURRENT_FLAG = 'Y'`) on OPPORTUNIT
 
 | Tool | Type | Capability |
 |------|------|------------|
-| `CRM_Analytics` | Cortex Analyst → `SV_CRM_SALES_INTELLIGENCE` | Structured SQL: pipeline metrics, rep performance, call volume, revenue forecasting |
-| `Email_Search` | Cortex Search → `EMAIL_SEARCH_SERVICE` | Semantic search across 105K+ emails by sentiment, topic, date |
-| `Call_Search` | Cortex Search → `CALL_SEARCH_SERVICE` | Semantic search across 23K+ call notes, voicemails, dispositions |
-| `Opportunity_Search` | Cortex Search → `OPPORTUNITY_SEARCH_SERVICE` | Semantic search across 34K+ opportunities with AI health scores |
+| `CRM_Analytics` | Cortex Analyst → `SV_CRM_SALES_INTELLIGENCE` | Structured SQL: pipeline metrics, rep performance, call volume, revenue forecasting, game attendance |
+| `Email_Search` | Cortex Search → `EMAIL_SEARCH_SERVICE` | Semantic search across ~161K emails by sentiment, topic, date |
+| `Call_Search` | Cortex Search → `CALL_SEARCH_SERVICE` | Semantic search across ~40K call notes, voicemails, dispositions |
+| `Opportunity_Search` | Cortex Search → `OPPORTUNITY_SEARCH_SERVICE` | Semantic search across ~28K opportunities with AI health scores |
 
 ## T_CALL_ACTIVITY Design
 
@@ -119,7 +126,7 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 1. `SYSTEM$STREAM_HAS_DATA` — task only fires when changes exist
 2. `LIMIT 500` on email enrichment — caps AI calls per cycle
 3. `NOT EXISTS` guards — prevents duplicate inserts
-4. Changed-only scoring — deal health scores ~200 changed opps, not all 22K
+4. Changed-only scoring — deal health scores ~200 changed opps, not all 43K
 5. Once-daily timestamp checks — call activity and email analytics skip if already run today
 
 **Historical warning**: Dynamic Tables with Cortex AI functions force full refresh and caused a $25K/week cost overrun. Never use Dynamic Tables for AI enrichment — use Streams + Tasks instead.

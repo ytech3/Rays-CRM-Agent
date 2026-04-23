@@ -256,9 +256,6 @@ WHEN NOT MATCHED THEN INSERT (
 -- AI calls: 2x COMPLETE per row (assessment + action)
 -- Cost safety: only open opportunities
 -- =====================================================
--- Drop the existing task first
-DROP TASK IF EXISTS TBRDP_DW_PROD.IM_RPT.TSK_REFRESH_DEAL_HEALTH;
-
 -- =====================================================
 -- TASK 3 (OPTIMIZED): Refresh Deal Health Scores
 -- Only rescores opps with changed activity metrics
@@ -291,15 +288,12 @@ USING (
         FROM TBRDP_DW_PROD.IM_RPT.T_OPPORTUNITY_ACTIVITY_METRICS oam
         JOIN TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY o
             ON oam.OPPORTUNITY_ID = o.ID
+        LEFT JOIN TBRDP_DW_PROD.IM_RPT.T_DEAL_HEALTH_SCORE dh
+            ON oam.OPPORTUNITY_ID = dh.OPPORTUNITY_ID
         WHERE o.SYSTEM_CURRENT_FLAG = 'Y'
           AND o.IS_CLOSED = FALSE
           -- ONLY opps where activity metrics are newer than last scoring
-          AND oam.METRICS_TIMESTAMP > COALESCE(
-              (SELECT tgt2.SCORING_TIMESTAMP 
-               FROM TBRDP_DW_PROD.IM_RPT.T_DEAL_HEALTH_SCORE tgt2 
-               WHERE tgt2.OPPORTUNITY_ID = oam.OPPORTUNITY_ID),
-              '1900-01-01'::TIMESTAMP
-          )
+          AND oam.METRICS_TIMESTAMP > COALESCE(dh.SCORING_TIMESTAMP, '1900-01-01'::TIMESTAMP)
     )
     SELECT 
         OPPORTUNITY_ID,

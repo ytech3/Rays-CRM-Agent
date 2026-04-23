@@ -40,8 +40,10 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CUSTOMER_360 as TBRDP_DW_PROD.IM_RPT.T_CUSTOMER_360 primary key (SF_ACCOUNT_ID) with synonyms=('customer intelligence','customer 360','customer profile','customer data','account intelligence','lifetime value','LTV','customer lifetime') comment='Unified customer view linking CRM opportunities to actual ticket purchases. Contains lifetime value, revenue tiers, conversion metrics, churn risk, and purchase history for 371K mapped customers.',
 		EMAIL_ANALYTICS as TBRDP_DW_PROD.IM_RPT.T_EMAIL_ANALYTICS primary key (EMAIL_ID) with synonyms=('emails','email activity','email metrics','email volume','outreach','communications','response times') comment='Individual email records with timestamps, direction, rep attribution, sentiment, response time calculations, and time-of-day analysis. Use for email volume counts, send time optimization, and response rate analysis.',
 		SALESFORCE_TASKS as TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_TASKS_CURRENT primary key (ID) with synonyms=('tasks','to-dos','follow-ups','action items','salesforce tasks','task list') comment='Individual Salesforce task records, pre-deduplicated for SCD Type 2 safety. Contains due dates (ACTIVITY_DATE), status, type, priority, and foreign keys to opportunities (WHAT_ID) and reps (OWNER_ID). Use for listing tasks by rep, filtering by due date range, or sorting by linked opportunity revenue.',
-		CALL_ACTIVITY as TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY primary key (SESSION_ID) with synonyms=('call activity','call data','call log','call metrics','calls','phone activity','phone calls','zoom calls') comment='Unified call activity from Zoom Contact Center (Session History) and Zoom Phone (Call Log). Contains call direction, talk time, duration, agent attribution, notes, and opportunity linkage. All timestamps in Eastern Time to match Tableau dashboard.'
-	)
+    CALL_ACTIVITY as TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY primary key (SESSION_ID) with synonyms=('call activity','call data','call log','call metrics','calls','phone activity','phone calls','zoom calls') comment='Unified call activity from Zoom Contact Center (Session History) and Zoom Phone (Call Log). Contains call direction, talk time, duration, agent attribution, notes, and opportunity linkage. All timestamps in Eastern Time to match Tableau dashboard.',
+    GAME_ATTENDANCE as TBRDP_DW_PROD.IM_RPT.V_CUSTOMER_GAME_ATTENDANCE primary key (FINANCIAL_PATRON_ACCOUNT_ID) with synonyms=('game attendance','attendance summary','games attended summary','win loss record','fan attendance summary') comment='Aggregated game attendance metrics per customer based on scanned tickets (IS_SCANNED=1). Use for summary stats like total games attended, win percentage, total spend. Covers 2023-2025 seasons.',
+    GAME_ATTENDANCE_DETAIL as TBRDP_DW_PROD.IM_RPT.V_CUSTOMER_GAME_ATTENDANCE_DETAIL primary key (FINANCIAL_PATRON_ACCOUNT_ID, GAMEPK) with synonyms=('game history','individual games','specific games attended','game dates','which games','what games') comment='Individual game attendance records with dates, opponents, scores, and outcomes. Use when asking about specific games a customer attended, game dates, or drill-down from summary stats. Scan-based (IS_SCANNED=1), 2023-2025 seasons.'
+  )
 	relationships (
 		OPPORTUNITIES_TO_ACTIVITY as OPPORTUNITIES(ID) references ACTIVITY_METRICS(OPPORTUNITY_ID),
 		OPPORTUNITIES_TO_CUSTOMER as OPPORTUNITIES(ACCOUNT_ID) references CUSTOMER_360(SF_ACCOUNT_ID),
@@ -52,9 +54,10 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		EMAILS_TO_REP as EMAIL_ANALYTICS(REP_USER_ID) references USERS(ID),
 		TASKS_TO_OPPORTUNITY as SALESFORCE_TASKS(WHAT_ID) references OPPORTUNITIES(ID),
 		TASKS_TO_OWNER as SALESFORCE_TASKS(OWNER_ID) references USERS(ID),
-		CALL_TO_OPPORTUNITY as CALL_ACTIVITY(OPPORTUNITY_ID) references OPPORTUNITIES(ID),
-		CALL_TO_USER as CALL_ACTIVITY(AGENT_OWNER_ID) references USERS(ID)
-	)
+    CALL_TO_OPPORTUNITY as CALL_ACTIVITY(OPPORTUNITY_ID) references OPPORTUNITIES(ID),
+    CALL_TO_USER as CALL_ACTIVITY(AGENT_OWNER_ID) references USERS(ID),
+    CUSTOMER_TO_GAME_ATTENDANCE as CUSTOMER_360(PATRON_ACCOUNT_ID) references GAME_ATTENDANCE(FINANCIAL_PATRON_ACCOUNT_ID)
+  )
 	facts (
 		OPPORTUNITIES.DEAL_AMOUNT as opportunities.AMOUNT comment='Revenue amount of the opportunity',
 		OPPORTUNITIES.WEIGHTED_AMOUNT as opportunities.AMOUNT * (opportunities.PROBABILITY / 100) comment='Probability-weighted revenue (amount x probability)',
@@ -82,9 +85,19 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CUSTOMER_360.CUST_SEASONS_COUNT as customer_360.SEASONS_PURCHASED comment='Number of different seasons the customer purchased tickets for',
 		EMAIL_ANALYTICS.EMAIL_SENTIMENT as email_analytics.SENTIMENT_SCORE comment='Sentiment score for this individual email (-1 to 1)',
 		EMAIL_ANALYTICS.EMAIL_RESPONSE_MINUTES as email_analytics.RESPONSE_MINUTES comment='Minutes until first inbound response to this outbound email. NULL if no response within 30 days.',
-		CALL_ACTIVITY.TALK_TIME_SECONDS as TALK_TIME_SECONDS with synonyms=('talk time','speaking time','conversation time','answer time') comment='Actual talk/speaking time in seconds. Matches Tableau dashboard Talk Time metric. For Contact Center uses answer_time; for Zoom Phone uses call_duration.',
-		CALL_ACTIVITY.DURATION_SECONDS as DURATION_SECONDS with synonyms=('call length','total duration','full duration') comment='Total call duration in seconds including ring time and wrap-up.'
-	)
+    CALL_ACTIVITY.TALK_TIME_SECONDS as TALK_TIME_SECONDS with synonyms=('talk time','speaking time','conversation time','answer time') comment='Actual talk/speaking time in seconds. Matches Tableau dashboard Talk Time metric. For Contact Center uses answer_time; for Zoom Phone uses call_duration.',
+    CALL_ACTIVITY.DURATION_SECONDS as DURATION_SECONDS with synonyms=('call length','total duration','full duration') comment='Total call duration in seconds including ring time and wrap-up.',
+    GAME_ATTENDANCE.GAMES_ATTENDED_COUNT as game_attendance.GAMES_ATTENDED with synonyms=('games attended','attendance count','number of games') comment='Total number of games attended by this customer based on scanned tickets (IS_SCANNED=1)',
+    GAME_ATTENDANCE.WINS_ATTENDED as game_attendance.GAMES_WON with synonyms=('wins attended','rays wins attended','games won') comment='Number of Rays wins at games this customer attended',
+    GAME_ATTENDANCE.LOSSES_ATTENDED as game_attendance.GAMES_LOST with synonyms=('losses attended','rays losses attended','games lost') comment='Number of Rays losses at games this customer attended',
+    GAME_ATTENDANCE.WIN_PERCENTAGE_ATTENDED as game_attendance.WIN_PCT_ATTENDED with synonyms=('win rate attended','win percentage at attended games','luck factor') comment='Percentage of attended games that were Rays wins (0-100)',
+    GAME_ATTENDANCE.TOTAL_TICKET_SPEND_AMOUNT as game_attendance.TOTAL_TICKET_SPEND with synonyms=('ticket spending','game ticket spend','total attendance spend') comment='Total amount spent on tickets for attended games',
+    GAME_ATTENDANCE.AVG_TICKET_PRICE_AMOUNT as game_attendance.AVG_TICKET_PRICE with synonyms=('average ticket price','avg price per ticket') comment='Average ticket price across all attended games',
+    GAME_ATTENDANCE_DETAIL.DETAIL_TICKETS as game_attendance_detail.TICKETS_PURCHASED with synonyms=('tickets bought','tickets for game','how many tickets') comment='Number of tickets purchased for this specific game',
+    GAME_ATTENDANCE_DETAIL.DETAIL_SPEND as game_attendance_detail.TICKET_SPEND with synonyms=('game spend','spent on game','ticket cost for game') comment='Amount spent on tickets for this specific game',
+    GAME_ATTENDANCE_DETAIL.DETAIL_HOME_SCORE as game_attendance_detail.HOME_SCORE comment='Home team score for this game',
+    GAME_ATTENDANCE_DETAIL.DETAIL_AWAY_SCORE as game_attendance_detail.AWAY_SCORE comment='Away team score for this game'
+  )
 	dimensions (
 		OPPORTUNITIES.OPP_NAME as opportunities.NAME with synonyms=('opportunity name','deal name') comment='Name of the sales opportunity',
 		OPPORTUNITIES.STAGE as opportunities.STAGE_NAME with synonyms=('sales stage','pipeline stage','deal stage') comment='Current stage in the sales pipeline',
@@ -178,8 +191,24 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CALL_ACTIVITY.CALL_DATE as DATE(CALL_START_TIME) with synonyms=('date of call') comment='Date of the call (no time component, Eastern Time)',
 		CALL_ACTIVITY.CREATED_DATE as CREATED_DATE comment='When the Salesforce record was created (Eastern Time)',
 		CALL_ACTIVITY.LAST_MODIFIED_DATE as LAST_MODIFIED_DATE comment='When the record was last modified (Eastern Time)',
-		CALL_ACTIVITY.LOADED_AT as LOADED_AT comment='When the record was loaded into T_CALL_ACTIVITY'
-	)
+    CALL_ACTIVITY.LOADED_AT as LOADED_AT comment='When the record was loaded into T_CALL_ACTIVITY',
+    GAME_ATTENDANCE.FIRST_GAME as game_attendance.FIRST_GAME_DATE with synonyms=('first game attended','earliest game') comment='Date of first game attended by this customer',
+    GAME_ATTENDANCE.LAST_GAME as game_attendance.LAST_GAME_DATE with synonyms=('last game attended','most recent game') comment='Date of most recent game attended by this customer',
+    GAME_ATTENDANCE.SEASONS_ATTENDED as game_attendance.SEASONS_ATTENDED with synonyms=('seasons attended list','which seasons attended') comment='Comma-separated list of seasons the customer attended games',
+    GAME_ATTENDANCE.SEASONS_COUNT as game_attendance.SEASONS_ATTENDED_COUNT with synonyms=('number of seasons attended','how many seasons') comment='Number of distinct seasons the customer attended games',
+    GAME_ATTENDANCE_DETAIL.DETAIL_PATRON_NAME as game_attendance_detail.PATRON_ACCOUNT_NAME with synonyms=('fan name','patron name','customer name for game') comment='Name of the fan who attended the game',
+    GAME_ATTENDANCE_DETAIL.DETAIL_EMAIL as game_attendance_detail.EMAIL with synonyms=('fan email','patron email') comment='Email address of the fan who attended',
+    GAME_ATTENDANCE_DETAIL.DETAIL_GAME_DATE as game_attendance_detail.GAME_DATE with synonyms=('game date','date of game','when was the game') comment='Date of the specific game attended',
+    GAME_ATTENDANCE_DETAIL.DETAIL_EVENT_NAME as game_attendance_detail.EVENT_NAME with synonyms=('game name','event','matchup name') comment='Name of the event/game (e.g., "Tampa Bay Rays vs. Boston Red Sox")',
+    GAME_ATTENDANCE_DETAIL.DETAIL_SEASON as game_attendance_detail.SEASON_YEAR with synonyms=('game season','season of game','which season') comment='Season year of the game (2023, 2024, 2025)',
+    GAME_ATTENDANCE_DETAIL.DETAIL_OPPONENT as game_attendance_detail.OPPONENT with synonyms=('opponent','who did rays play','opposing team','versus') comment='Opponent team abbreviation (e.g., BOS, NYY, BAL)',
+    GAME_ATTENDANCE_DETAIL.DETAIL_HOME_TEAM as game_attendance_detail.HOME_TEAM with synonyms=('home team') comment='Home team abbreviation',
+    GAME_ATTENDANCE_DETAIL.DETAIL_AWAY_TEAM as game_attendance_detail.AWAY_TEAM with synonyms=('away team','visiting team') comment='Away team abbreviation',
+    GAME_ATTENDANCE_DETAIL.DETAIL_RAYS_WIN as game_attendance_detail.RAYS_WIN with synonyms=('did rays win','rays won','win or loss') comment='Whether Rays won this game (true/false)',
+    GAME_ATTENDANCE_DETAIL.DETAIL_GAME_RESULT as game_attendance_detail.GAME_RESULT with synonyms=('game result','outcome','win loss','W or L') comment='Game result: WIN or LOSS',
+    GAME_ATTENDANCE_DETAIL.DETAIL_RAYS_HOME as game_attendance_detail.RAYS_HOME with synonyms=('home game','rays at home','home or away') comment='Whether Rays were the home team for this game',
+    GAME_ATTENDANCE_DETAIL.DETAIL_GAMEPK as game_attendance_detail.GAMEPK with synonyms=('game id','mlb game id','game pk') comment='MLB Game ID — unique identifier for each game'
+  )
 	metrics (
 		OPPORTUNITIES.TOTAL_PIPELINE_VALUE as SUM(opportunities.deal_amount) comment='Total value of all opportunities in the pipeline',
 		OPPORTUNITIES.WEIGHTED_PIPELINE_VALUE as SUM(opportunities.weighted_amount) comment='Total probability-weighted pipeline value',
@@ -237,11 +266,21 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CALL_ACTIVITY.TOTAL_CALL_MINUTES as ROUND(SUM(DURATION_SECONDS) / 60.0, 1) comment='Total call duration in minutes (includes ring/wait)',
 		CALL_ACTIVITY.CALLS_WITH_NOTES as SUM(CASE WHEN CALL_NOTES IS NOT NULL THEN 1 ELSE 0 END) with synonyms=('logged calls','noted calls') comment='Number of calls where rep logged notes',
 		CALL_ACTIVITY.NOTE_LOGGING_RATE as ROUND(SUM(CASE WHEN CALL_NOTES IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(SESSION_ID), 0), 1) with synonyms=('disposition rate','logging compliance','logging rate') comment='Percentage of calls with notes logged',
-		CALL_ACTIVITY.CALLS_LINKED_TO_OPPORTUNITY as SUM(CASE WHEN OPPORTUNITY_ID IS NOT NULL THEN 1 ELSE 0 END) with synonyms=('attributed calls','linked calls') comment='Number of calls linked to an opportunity'
-	)
+    CALL_ACTIVITY.CALLS_LINKED_TO_OPPORTUNITY as SUM(CASE WHEN OPPORTUNITY_ID IS NOT NULL THEN 1 ELSE 0 END) with synonyms=('attributed calls','linked calls') comment='Number of calls linked to an opportunity',
+    GAME_ATTENDANCE.TOTAL_GAMES_ATTENDED as SUM(game_attendance.games_attended_count) with synonyms=('total games attended','aggregate games attended') comment='Total games attended across all customers',
+    GAME_ATTENDANCE.TOTAL_WINS_ATTENDED as SUM(game_attendance.wins_attended) with synonyms=('total wins attended','aggregate wins') comment='Total Rays wins attended across all customers',
+    GAME_ATTENDANCE.TOTAL_LOSSES_ATTENDED as SUM(game_attendance.losses_attended) with synonyms=('total losses attended','aggregate losses') comment='Total Rays losses attended across all customers',
+    GAME_ATTENDANCE.AVG_WIN_PCT_ATTENDED as AVG(game_attendance.win_percentage_attended) with synonyms=('average win percentage','avg win rate attended') comment='Average win percentage at attended games across customers',
+    GAME_ATTENDANCE.TOTAL_GAME_TICKET_SPEND as SUM(game_attendance.total_ticket_spend_amount) with synonyms=('total ticket spend on games','aggregate game spend') comment='Total ticket spend on attended games across all customers',
+    GAME_ATTENDANCE.AVG_GAMES_PER_CUSTOMER as AVG(game_attendance.games_attended_count) with synonyms=('average games attended','avg games per fan') comment='Average games attended per customer',
+    GAME_ATTENDANCE.CUSTOMERS_WITH_HIGH_WIN_PCT as COUNT(CASE WHEN game_attendance.win_percentage_attended >= 60 THEN 1 END) with synonyms=('lucky customers','high win rate fans') comment='Number of customers who attended games with 60%+ Rays win rate',
+    GAME_ATTENDANCE_DETAIL.DETAIL_GAME_COUNT as COUNT(DISTINCT game_attendance_detail.detail_gamepk) with synonyms=('games in detail','number of game records','unique games') comment='Count of distinct games in attendance detail records',
+    GAME_ATTENDANCE_DETAIL.DETAIL_WINS_COUNT as COUNT(CASE WHEN game_attendance_detail.detail_rays_win = TRUE THEN 1 END) with synonyms=('wins in detail','detail win count') comment='Count of Rays wins in game detail records',
+    GAME_ATTENDANCE_DETAIL.DETAIL_LOSSES_COUNT as COUNT(CASE WHEN game_attendance_detail.detail_rays_win = FALSE THEN 1 END) with synonyms=('losses in detail','detail loss count') comment='Count of Rays losses in game detail records'
+  )
 	-- NOTE: After running this CREATE OR REPLACE, re-add named filter in Snowsight editor:
 	--   CURRENT_RECORDS_ONLY → SYSTEM_CURRENT_FLAG = 'Y' on OPPORTUNITIES table
-	comment='Semantic view for CRM sales intelligence — enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call activity metrics by rep and date, individual Salesforce task queries by rep, due date, and status, and closed lost objection/loss reason analysis.'
+  comment='Semantic view for CRM sales intelligence (10 tables) — enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call activity metrics by rep and date, individual Salesforce task queries by rep, due date, and status, closed lost objection/loss reason analysis, and game attendance metrics (summary and per-game detail with opponents, scores, and outcomes).'
 	ai_sql_generation $$
     When generating SQL:
     1. Always filter for SYSTEM_CURRENT_FLAG = 'Y' on the OPPORTUNITIES table AND the USERS table to get current records only. The USERS table (V_SALESFORCE_USER_CURRENT) is already pre-filtered, but OPPORTUNITIES (V_ODS_SALESFORCE_OPPORTUNITY) still requires an explicit WHERE SYSTEM_CURRENT_FLAG = 'Y' in every query.
@@ -300,6 +339,11 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     33. When asked to sort or list tasks by opportunity revenue, join SALESFORCE_TASKS to OPPORTUNITIES via the TASKS_TO_OPPORTUNITY relationship and ORDER BY opportunities.AMOUNT DESC NULLS LAST. Tasks where WHAT_ID IS NULL (no linked opportunity) should appear last.
     34. For task listing queries, always include these columns in the output: salesforce_tasks.SUBJECT, salesforce_tasks.ACTIVITY_DATE, salesforce_tasks.STATUS, salesforce_tasks.PRIORITY, and the linked opportunity NAME and AMOUNT where available.
     35. When asked about loss reasons, why deals were lost, objections, or closed lost analysis, use the PRIMARY_OBJECTION (OBJECTIONS_C) and SECONDARY_OBJECTION (SECONDARY_OBJECTIONS_C) dimensions on the OPPORTUNITIES table. Always filter IS_CLOSED = TRUE AND IS_WON = FALSE when analyzing loss reasons. Note: many older records have NULL objections — filter PRIMARY_OBJECTION IS NOT NULL to exclude unclassified records unless the user wants to see the full picture. Top objection values: Neglect Meter, Season Over, Bad Contact/No Response, Financial, Not a Fan, Too Far to Drive, Schedule/Time, Working with another rep.
+    36. GAME ATTENDANCE — For summary-level attendance questions (how many games attended, win percentage, total spend), use the GAME_ATTENDANCE table. For specific game details (which games, opponents, scores, dates), use GAME_ATTENDANCE_DETAIL. Both are linked to CUSTOMER_360 via PATRON_ACCOUNT_ID = FINANCIAL_PATRON_ACCOUNT_ID.
+    37. Game attendance data is scan-based (IS_SCANNED=1) covering 2023-2025 seasons. Only customers who physically scanned into the stadium are included.
+    38. When filtering game attendance by season, use game_attendance_detail.SEASON_YEAR (e.g., 2024). When filtering by opponent, use game_attendance_detail.OPPONENT with team abbreviations (e.g., 'BOS', 'NYY', 'BAL').
+    39. For game results, RAYS_WIN is a boolean and GAME_RESULT is 'WIN' or 'LOSS'. Use GAME_RESULT for display and RAYS_WIN for boolean filtering.
+    40. When asked about a customer's game history alongside their CRM data, join through CUSTOMER_360 using the CUSTOMER_TO_GAME_ATTENDANCE relationship. GAME_ATTENDANCE_DETAIL shares FINANCIAL_PATRON_ACCOUNT_ID with GAME_ATTENDANCE for drill-down.
   $$
 	ai_question_categorization $$
     Question Classification Rules:
@@ -332,6 +376,11 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     - Loss reasons, objections, why deals were closed lost
     - Objection breakdown by rep, department, or time period
     - Primary and secondary objection analysis
+    - Game attendance: total games attended, win percentage, ticket spend per customer
+    - Which games a customer attended, opponents, scores, game dates
+    - Game attendance by season, by opponent, home vs away
+    - Customer game history alongside CRM and ticket purchase data
+    - Fans with high win percentages (lucky customers)
 
     CLARIFICATION NEEDED for vague questions like:
     - Show me deals without time frame or filters

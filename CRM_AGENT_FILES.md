@@ -5,12 +5,12 @@ Warehouse: TBRDP_DW_CORTEX_XS_WH
 ARCHITECTURE — Streams + Tasks (rebuilt Feb 17-18, 2026 after $25K/week Dynamic Table cost crisis):
 Permanent Data Tables:
 
-T_EMAIL_ENRICHED (~105K rows) — emails with AI sentiment, topic, signal, summary via llama3.1-70b
-T_OPPORTUNITY_ACTIVITY_METRICS (~22,787 rows) — email/call/task counts, engagement levels, ghosting flags per opportunity
-T_DEAL_HEALTH_SCORE (~34K rows) — AI health scores (0-100), categories (Healthy/At Risk/Critical), deal assessments
-T_CUSTOMER_360 (~371,485 rows) — unified customer profiles with LTV, revenue tiers, churn risk, upsell flags, ticket purchase history
-T_EMAIL_ANALYTICS (~101K rows) — individual email records with direction, rep attribution, response times, time-of-day buckets, sentiment
-T_CALL_ACTIVITY (growing, ~23K+) — Zoom call records from Session History + Call Log, deduped by session_id
+T_EMAIL_ENRICHED (~161K rows) — emails with AI sentiment, topic, signal, summary via llama3.1-70b
+T_OPPORTUNITY_ACTIVITY_METRICS (~43,801 rows) — email/call/task counts, engagement levels, ghosting flags per opportunity
+T_DEAL_HEALTH_SCORE (~42,961 rows) — AI health scores (0-100), categories (Healthy/At Risk/Critical), deal assessments
+T_CUSTOMER_360 (~437,461 rows) — unified customer profiles with LTV, revenue tiers, churn risk, upsell flags, ticket purchase history
+T_EMAIL_ANALYTICS (~163K rows) — individual email records with direction, rep attribution, response times, time-of-day buckets, sentiment
+T_CALL_ACTIVITY (~86,453 rows) — Zoom call records from Session History + Call Log, deduped by session_id
 T_TICKET_TEAM_DEPARTMENT_MAPPING (23 reps) — 5 departments: TICKET_SALES (7 Group AEs), TICKET_SERVICE (4), TICKET_MEMBER_AE (2), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6)
 
 Streams (5 active, append-only):
@@ -40,17 +40,17 @@ OPPORTUNITY_SEARCH_SERVICE — reads from V_OPPORTUNITY_CONTEXT_SEARCH view on V
 
 Semantic View: SV_CRM_SALES_INTELLIGENCE
 
-8 logical tables: OPPORTUNITIES, DEAL_HEALTH, ACTIVITY_METRICS, USERS, TICKET_TEAM_DEPT, CUSTOMER_360, EMAIL_ANALYTICS, CALL_ACTIVITY
+10 logical tables: OPPORTUNITIES, DEAL_HEALTH, ACTIVITY_METRICS, USERS, TICKET_TEAM_DEPT, CUSTOMER_360, EMAIL_ANALYTICS, CALL_ACTIVITY, GAME_ATTENDANCE, GAME_ATTENDANCE_DETAIL
 Named filter: CURRENT_RECORDS_ONLY (SYSTEM_CURRENT_FLAG = 'Y') on OPPORTUNITIES
-30 ai_sql_generation rules including critical date range filtering (never DATE_TRUNC = string), department code mappings, email analytics routing, call query filters (IS_ACTIVE_SALES_REP, CALL_DIRECTION)
+40 ai_sql_generation rules including critical date range filtering (never DATE_TRUNC = string), department code mappings, email analytics routing, call query filters (IS_ACTIVE_SALES_REP, CALL_DIRECTION), game attendance routing (summary vs detail)
 ai_sql_generation and ai_question_categorization in $$ blocks
 
 ARM Agent: 4 tools connected:
 
-CRM_Analytics — Cortex Analyst → SV_CRM_SALES_INTELLIGENCE (structured SQL queries)
-Email_Search — Cortex Search → EMAIL_SEARCH_SERVICE (semantic search across 105K+ emails)
-Call_Search — Cortex Search → CALL_SEARCH_SERVICE (semantic search across 23K+ call records)
-Opportunity_Search — Cortex Search → OPPORTUNITY_SEARCH_SERVICE (semantic search across 34K+ opportunities)
+CRM_Analytics — Cortex Analyst → SV_CRM_SALES_INTELLIGENCE (structured SQL queries, game attendance)
+Email_Search — Cortex Search → EMAIL_SEARCH_SERVICE (semantic search across ~161K emails)
+Call_Search — Cortex Search → CALL_SEARCH_SERVICE (semantic search across ~40K call records)
+Opportunity_Search — Cortex Search → OPPORTUNITY_SEARCH_SERVICE (semantic search across ~28K opportunities)
 
 Cost Profile: ~3-6/day ($90-180/month) vs. old $3,500/day. 5 layers of cost protection: stream consumption, SYSTEM
 STREAM_HAS_DATA, NOT EXISTS guards, LIMIT 500, changed-only scoring.
@@ -78,10 +78,10 @@ Schema: `IM_RPT`
 This document provides comprehensive schema definitions for all data sources used in the ARM Agent (Account & Relationship Management Agent) project. The ARM Agent is a CRM Intelligence Platform that enriches Salesforce data with AI-powered sentiment analysis, deal health scoring, and natural language search capabilities.
 
 ### Platform Statistics
-- **Email Records**: 105,000+
-- **Opportunities**: 34,000+
-- **Customer Records**: 371,485
-- **Call Records**: 23,000+
+- **Email Records**: 161,000+
+- **Opportunities**: 43,800+
+- **Customer Records**: 437,461
+- **Call Records**: 86,400+
 - **Platinum Customers**: 398 (driving $64.2M in revenue)
 
 ### Core Architecture
@@ -91,7 +91,7 @@ This document provides comprehensive schema definitions for all data sources use
 - **Processing**: Streams + Tasks (incremental, every 2 hours)
 - **Search**: Cortex Search Services (EMAIL_SEARCH_SERVICE, CALL_SEARCH_SERVICE, OPPORTUNITY_SEARCH_SERVICE)
 - **Query Interface**: Semantic Views (SV_CRM_SALES_INTELLIGENCE)
-- **Agent Model**: Claude Sonnet 4
+- **Agent Model**: Claude Sonnet 4.5
 
 ---
 
@@ -116,7 +116,7 @@ This document provides comprehensive schema definitions for all data sources use
 - Close date forecasting ("What deals are closing this month?")
 - Deal health scoring and risk assessment
 
-**Row Count**: 22,000+ opportunities
+**Row Count**: 43,800+ opportunities
 
 ### Schema Definition
 
@@ -790,22 +790,26 @@ FROM table;
 
 ## ARM Agent Architecture
 
-### Three-Tool Orchestration
+### Four-Tool Orchestration
 
-The ARM Agent uses Claude Sonnet 4 with three specialized tools:
+The ARM Agent uses Claude Sonnet 4.5 with four specialized tools:
 
 1. **CRM_Analytics** (Semantic View)
-   - Structured SQL queries against `SV_CRM_SALES_INTELLIGENCE`
-   - Pipeline metrics, stage analysis, revenue forecasting
+   - Structured SQL queries against `SV_CRM_SALES_INTELLIGENCE` (10 logical tables)
+   - Pipeline metrics, stage analysis, revenue forecasting, game attendance
    - Rep performance tracking
 
 2. **Email_Search** (Cortex Search Service)
-   - Semantic search across 90,000+ emails
+   - Semantic search across ~161K emails
    - Natural language queries: "Show frustrated emails from last week"
    - Sentiment-filtered search
 
-3. **Opportunity_Search** (Cortex Search Service)
-   - Semantic search across 22,000+ opportunities
+3. **Call_Search** (Cortex Search Service)
+   - Semantic search across ~40K call records
+   - Call notes, voicemails, dispositions
+
+4. **Opportunity_Search** (Cortex Search Service)
+   - Semantic search across ~28K opportunities
    - Deal context retrieval
    - Enriched with AI-generated health scores
 
@@ -939,16 +943,17 @@ ORDER BY total_pipeline_value DESC;
 
 ## Document Metadata
 
-- **Last Updated**: February 18, 2026
+- **Last Updated**: April 23, 2026
 - **Created By**: Yuki, Data Engineer, Tampa Bay Rays
 - **Project**: ARM Agent (Account & Relationship Management Agent)
-- **Version**: 1.0
+- **Version**: 1.1
 - **Status**: Production
 
 ### Change Log
 
 | Date | Version | Changes | Author |
 |------|---------|---------|--------|
+| 2026-04-23 | 1.1 | Updated row counts, semantic view to 10 tables (added GAME_ATTENDANCE + GAME_ATTENDANCE_DETAIL), agent model to Claude Sonnet 4.5, updated file references | Yuki |
 | 2026-02-18 | 1.0 | Initial comprehensive documentation | Yuki |
 
 ---
@@ -956,12 +961,17 @@ ORDER BY total_pipeline_value DESC;
 ## Additional Resources
 
 ### Related Files in Project
-- `CRM_AGENT_SQL` - All SQL queries used in project
-- `Cortex_Agents` - Snowflake Cortex Agent documentation
-- `Cortex_Search` - Cortex Search Service documentation
-- `Semantic_Views` - Semantic View implementation guide
-- `CREATE_AGENT` - Agent creation SQL syntax
-- `CREATE_CORTEX_SEARCH_SERVICE` - Search service creation syntax
+- `Semantic_View.SQL` - Semantic View definition (10 logical tables)
+- `Tasks.SQL` - Task DAG and stream definitions
+- `CUSTOMER_360.SQL` - Customer 360 table definition
+- `T_Call_Activity.SQL` - Call activity table and task
+- `Email_Analytics.SQL` - Email analytics table
+- `Game_Attendance_Views.SQL` - Game attendance views (summary + detail)
+- `Cortex_Search.SQL` - Cortex Search Service definitions
+- `Source_Views.SQL` - Source views for Cortex Search
+- `STAFF_BUILDOUT.sql` - Helper views and team mapping table
+- `Health_Check.SQL` - Health check task and recovery procedures
+- `CRM Agent Config.yaml` - Agent configuration
 
 ### Key Learnings
 1. **Cost Control**: Streams + Tasks >> Dynamic Tables for incremental AI processing
@@ -974,7 +984,7 @@ ORDER BY total_pipeline_value DESC;
 - **Cost Reduction**: 99% (from $3,500/day to $3-6/day)
 - **Processing Efficiency**: 200 vs 22,000 records per cycle
 - **Data Freshness**: 2-hour refresh cycle
-- **Coverage**: 90K+ emails, 22K+ opportunities, 371K+ customers
+- **Coverage**: 161K+ emails, 43K+ opportunities, 437K+ customers, 86K+ calls
 
 ---
 
