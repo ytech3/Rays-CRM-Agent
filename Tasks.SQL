@@ -83,6 +83,15 @@ LIMIT 500;
 -- Pure SQL — no AI functions, negligible cost
 -- Runs as child of TSK_ENRICH_NEW_EMAILS
 -- Uses MERGE to update existing + insert new opps
+--
+-- SOURCE: Dimensional model (v_fact_activities + dims)
+-- matching Tableau "DM Salesforce Activities Prod"
+-- datasource for consistent activity counts.
+-- FILTER: 2026 season, Ticketing record type only
+-- COUNTD: Uses COUNT(DISTINCT V_FACT_ACTIVITIES_KEY)
+-- to match Tableau's COUNTD([ACTIVITY_ID])
+-- SENTIMENT: Preserved via v_dim_email_message →
+-- T_EMAIL_ENRICHED join path
 -- =====================================================
 CREATE OR REPLACE TASK TBRDP_DW_PROD.IM_RPT.TSK_REFRESH_ACTIVITY_METRICS
     WAREHOUSE = TBRDP_DW_CORTEX_XS_WH
@@ -90,51 +99,108 @@ CREATE OR REPLACE TASK TBRDP_DW_PROD.IM_RPT.TSK_REFRESH_ACTIVITY_METRICS
 AS
 MERGE INTO TBRDP_DW_PROD.IM_RPT.T_OPPORTUNITY_ACTIVITY_METRICS tgt
 USING (
-    WITH email_metrics AS (
-        SELECT 
-            e.RELATED_TO_ID AS opportunity_id,
-            COUNT(*) AS total_emails,
-            COUNT(CASE WHEN e.INCOMING = TRUE THEN 1 END) AS incoming_emails,
-            COUNT(CASE WHEN e.INCOMING = FALSE THEN 1 END) AS outgoing_emails,
-            MAX(e.MESSAGE_DATE) AS last_email_date,
-            DATEDIFF('day', MAX(e.MESSAGE_DATE), CURRENT_DATE()) AS days_since_last_email,
+    -- -------------------------------------------------------
+    -- Activity metrics from dimensional model (matches Tableau)
+    -- v_fact_activities is pre-filtered and deduped by ETL
+    -- -------------------------------------------------------
+    WITH dim_activities AS (
+        SELECT
+            fact.V_FACT_ACTIVITIES_KEY,
+            fact.CALL_DURATION_IN_SECONDS,
+            actt.ACTIVITY_SUBTYPE,                           -- Email, Call, Task, ListEmail
+            acts.ACTIVITY_STATUS,                            -- Completed, Open, In Progress
+            dopps.OPPORTUNITY_ID_BK AS opportunity_id,
+            -- Activity date from date dimension (populated for ALL subtypes)
+            dad.DIM_DATE_BK AS activity_date,
+            -- Email-specific fields from dim_email_message
+            dem.ID_BK AS email_id_bk,
+            dem.INCOMING AS email_incoming,
+            dem.MESSAGE_DATE AS email_message_date
+        FROM TBRDP_DW_PROD.IM_RPT.V_FACT_ACTIVITIES fact
+        INNER JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_ACTIVITY_TYPE actt
+            ON fact.V_DIM_ACTIVITY_TYPE_KEY = actt.V_DIM_ACTIVITY_TYPE_KEY
+        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_ACTIVITY_STATUS acts
+            ON fact.V_DIM_ACTIVITY_STATUS_KEY = acts.V_DIM_ACTIVITY_STATUS_KEY
+        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_OPPORTUNITY dopps
+            ON fact.V_DIM_OPPORTUNITY_KEY = dopps.V_DIM_OPPORTUNITY_KEY
+        -- Join to v_fact_opportunities for season filtering
+        INNER JOIN (
+            SELECT DISTINCT fopps.V_DIM_OPPORTUNITY_KEY
+            FROM TBRDP_DW_PROD.IM_RPT.V_FACT_OPPORTUNITIES fopps
+            INNER JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_CRM_SEASON__OPP_SEASON sea
+                ON fopps.V_DIM_CRM_SEASON__OPP_SEASON_KEY = sea.V_DIM_CRM_SEASON__OPP_SEASON_KEY
+            WHERE sea.NAME = '2026'
+        ) opp_season ON dopps.V_DIM_OPPORTUNITY_KEY = opp_season.V_DIM_OPPORTUNITY_KEY
+        -- Activity date dimension (has dates for ALL activity subtypes)
+        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_DATE__ACTIVITY_DATE dad
+            ON fact.V_DIM_DATE__ACTIVITY_DATE_KEY = dad.V_DIM_DATE__ACTIVITY_DATE_KEY
+        -- Email dimension for direction and message date (emails only)
+        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_EMAIL_MESSAGE dem
+            ON fact.V_DIM_EMAIL_MESSAGE_KEY = dem.V_DIM_EMAIL_MESSAGE_KEY
+        WHERE dopps.OPPORTUNITY_ID_BK IS NOT NULL
+          AND dopps.RECORD_TYPE = 'Ticketing'
+    ),
+    -- -------------------------------------------------------
+    -- Aggregate to opportunity level
+    -- -------------------------------------------------------
+    activity_agg AS (
+        SELECT
+            da.opportunity_id,
+            -- Total activities (matches Tableau COUNTD)
+            COUNT(DISTINCT da.V_FACT_ACTIVITIES_KEY) AS total_activities,
+            -- Email metrics
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Email' THEN da.V_FACT_ACTIVITIES_KEY END) AS total_emails,
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Email' AND da.email_incoming = TRUE THEN da.V_FACT_ACTIVITIES_KEY END) AS incoming_emails,
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Email' AND da.email_incoming = FALSE THEN da.V_FACT_ACTIVITIES_KEY END) AS outgoing_emails,
+            MAX(CASE WHEN da.ACTIVITY_SUBTYPE = 'Email' THEN da.email_message_date END) AS last_email_date,
+            DATEDIFF('day',
+                MAX(CASE WHEN da.ACTIVITY_SUBTYPE = 'Email' THEN da.email_message_date END),
+                CURRENT_DATE()
+            ) AS days_since_last_email,
+            -- Call metrics
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Call' THEN da.V_FACT_ACTIVITIES_KEY END) AS total_calls,
+            SUM(CASE WHEN da.ACTIVITY_SUBTYPE = 'Call' THEN COALESCE(da.CALL_DURATION_IN_SECONDS, 0) ELSE 0 END) AS total_call_duration_seconds,
+            AVG(CASE WHEN da.ACTIVITY_SUBTYPE = 'Call' AND da.CALL_DURATION_IN_SECONDS IS NOT NULL THEN da.CALL_DURATION_IN_SECONDS END) AS avg_call_duration_seconds,
+            MAX(CASE WHEN da.ACTIVITY_SUBTYPE = 'Call' THEN da.activity_date END) AS last_call_date,
+            DATEDIFF('day',
+                MAX(CASE WHEN da.ACTIVITY_SUBTYPE = 'Call' THEN da.activity_date END),
+                CURRENT_DATE()
+            ) AS days_since_last_call,
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Call' AND da.ACTIVITY_STATUS = 'Completed' THEN da.V_FACT_ACTIVITIES_KEY END) AS completed_calls,
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Call' AND da.ACTIVITY_STATUS != 'Completed' THEN da.V_FACT_ACTIVITIES_KEY END) AS missed_calls,
+            -- Task metrics
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Task' THEN da.V_FACT_ACTIVITIES_KEY END) AS total_tasks,
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Task' AND da.ACTIVITY_STATUS = 'Completed' THEN da.V_FACT_ACTIVITIES_KEY END) AS completed_tasks,
+            COUNT(DISTINCT CASE WHEN da.ACTIVITY_SUBTYPE = 'Task' AND da.ACTIVITY_STATUS IN ('Open', 'In Progress') THEN da.V_FACT_ACTIVITIES_KEY END) AS pending_tasks,
+            MAX(CASE WHEN da.ACTIVITY_SUBTYPE = 'Task' AND da.ACTIVITY_STATUS = 'Completed' THEN da.activity_date END) AS last_completed_task_date,
+            DATEDIFF('day',
+                MAX(CASE WHEN da.ACTIVITY_SUBTYPE = 'Task' AND da.ACTIVITY_STATUS = 'Completed' THEN da.activity_date END),
+                CURRENT_DATE()
+            ) AS days_since_last_completed_task
+        FROM dim_activities da
+        GROUP BY da.opportunity_id
+    ),
+    -- -------------------------------------------------------
+    -- Email sentiment from T_EMAIL_ENRICHED (via dim model)
+    -- Join: v_dim_email_message.ID_BK → T_EMAIL_ENRICHED.EMAIL_ID
+    -- -------------------------------------------------------
+    email_sentiment AS (
+        SELECT
+            da.opportunity_id,
             AVG(ee.SENTIMENT_SCORE) AS avg_email_sentiment,
             COUNT(CASE WHEN ee.SENTIMENT_CATEGORY = 'Negative' THEN 1 END) AS negative_email_count,
             COUNT(CASE WHEN ee.EMAIL_TOPIC IN ('{"label": "Objection/Concern"}', '{"label": "Competitor Mention"}') THEN 1 END) AS risk_emails
-        FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_CRM_EMAIL_MESSAGE e
-        LEFT JOIN TBRDP_DW_PROD.IM_RPT.T_EMAIL_ENRICHED ee
-            ON e.ID = ee.EMAIL_ID
-        WHERE e.RELATED_TO_ID IS NOT NULL
-        GROUP BY e.RELATED_TO_ID
-    ),
-    call_metrics AS (
-        SELECT 
-            c.ID AS opportunity_id,
-            COUNT(*) AS total_calls,
-            SUM(NULLIF(TRY_CAST(c.ZVC_CALL_DURATION_C AS NUMBER), NULL)) AS total_call_duration_seconds,
-            AVG(NULLIF(TRY_CAST(c.ZVC_CALL_DURATION_C AS NUMBER), NULL)) AS avg_call_duration_seconds,
-            MAX(c.ZVC_RING_START_TIME_C) AS last_call_date,
-            DATEDIFF('day', MAX(c.ZVC_RING_START_TIME_C), CURRENT_DATE()) AS days_since_last_call,
-            COUNT(CASE WHEN c.ZVC_CALL_RESULT_C ILIKE 'Completed' THEN 1 END) AS completed_calls,
-            COUNT(CASE WHEN c.ZVC_CALL_RESULT_C ILIKE 'No Answer' THEN 1 END) AS missed_calls
-        FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_CRM_ZVC_ZOOM_CALL_LOG_C c
-        WHERE c.ID IS NOT NULL
-        GROUP BY c.ID
-    ),
-    task_metrics AS (
-        SELECT 
-            t.WHAT_ID AS opportunity_id,
-            COUNT(*) AS total_tasks,
-            COUNT(CASE WHEN t.STATUS = 'Completed' THEN 1 END) AS completed_tasks,
-            COUNT(CASE WHEN t.STATUS = 'Not Started' THEN 1 END) AS pending_tasks,
-            COUNT(CASE WHEN t.IS_CLOSED = TRUE THEN 1 END) AS closed_tasks,
-            MAX(CASE WHEN t.STATUS = 'Completed' THEN t.COMPLETED_DATE_TIME END) AS last_completed_task_date,
-            DATEDIFF('day', MAX(CASE WHEN t.STATUS = 'Completed' THEN t.COMPLETED_DATE_TIME END), CURRENT_DATE()) AS days_since_last_completed_task
-        FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_TASK t
-        WHERE t.WHAT_ID IS NOT NULL
-        GROUP BY t.WHAT_ID
+        FROM dim_activities da
+        INNER JOIN TBRDP_DW_PROD.IM_RPT.T_EMAIL_ENRICHED ee
+            ON da.email_id_bk = ee.EMAIL_ID
+        WHERE da.ACTIVITY_SUBTYPE = 'Email'
+          AND da.email_id_bk IS NOT NULL
+        GROUP BY da.opportunity_id
     )
-    SELECT 
+    -- -------------------------------------------------------
+    -- Final SELECT: join opportunity details with activity agg
+    -- -------------------------------------------------------
+    SELECT
         o.ID AS opportunity_id,
         o.NAME AS opportunity_name,
         o.ACCOUNT_ID,
@@ -145,53 +211,52 @@ USING (
         o.PROBABILITY,
         o.CLOSE_DATE,
         o.CREATED_DATE,
-        COALESCE(em.total_emails, 0) AS total_emails,
-        COALESCE(em.incoming_emails, 0) AS incoming_emails,
-        COALESCE(em.outgoing_emails, 0) AS outgoing_emails,
-        em.last_email_date,
-        COALESCE(em.days_since_last_email, 9999) AS days_since_last_email,
-        COALESCE(em.avg_email_sentiment, 0) AS avg_email_sentiment,
-        COALESCE(em.negative_email_count, 0) AS negative_email_count,
-        COALESCE(em.risk_emails, 0) AS risk_emails,
-        COALESCE(cm.total_calls, 0) AS total_calls,
-        COALESCE(cm.total_call_duration_seconds, 0) AS total_call_duration_seconds,
-        COALESCE(cm.avg_call_duration_seconds, 0) AS avg_call_duration_seconds,
-        cm.last_call_date,
-        COALESCE(cm.days_since_last_call, 9999) AS days_since_last_call,
-        COALESCE(cm.completed_calls, 0) AS completed_calls,
-        COALESCE(cm.missed_calls, 0) AS missed_calls,
-        COALESCE(tm.total_tasks, 0) AS total_tasks,
-        COALESCE(tm.completed_tasks, 0) AS completed_tasks,
-        COALESCE(tm.pending_tasks, 0) AS pending_tasks,
-        tm.last_completed_task_date,
-        COALESCE(tm.days_since_last_completed_task, 9999) AS days_since_last_completed_task,
-        CASE 
-            WHEN COALESCE(em.days_since_last_email, 9999) <= 7 
-             AND COALESCE(cm.days_since_last_call, 9999) <= 14
-             AND COALESCE(em.avg_email_sentiment, 0) > 0 
+        COALESCE(aa.total_activities, 0) AS total_activities,
+        COALESCE(aa.total_emails, 0) AS total_emails,
+        COALESCE(aa.incoming_emails, 0) AS incoming_emails,
+        COALESCE(aa.outgoing_emails, 0) AS outgoing_emails,
+        aa.last_email_date,
+        COALESCE(aa.days_since_last_email, 9999) AS days_since_last_email,
+        COALESCE(es.avg_email_sentiment, 0) AS avg_email_sentiment,
+        COALESCE(es.negative_email_count, 0) AS negative_email_count,
+        COALESCE(es.risk_emails, 0) AS risk_emails,
+        COALESCE(aa.total_calls, 0) AS total_calls,
+        COALESCE(aa.total_call_duration_seconds, 0) AS total_call_duration_seconds,
+        COALESCE(aa.avg_call_duration_seconds, 0) AS avg_call_duration_seconds,
+        aa.last_call_date,
+        COALESCE(aa.days_since_last_call, 9999) AS days_since_last_call,
+        COALESCE(aa.completed_calls, 0) AS completed_calls,
+        COALESCE(aa.missed_calls, 0) AS missed_calls,
+        COALESCE(aa.total_tasks, 0) AS total_tasks,
+        COALESCE(aa.completed_tasks, 0) AS completed_tasks,
+        COALESCE(aa.pending_tasks, 0) AS pending_tasks,
+        aa.last_completed_task_date,
+        COALESCE(aa.days_since_last_completed_task, 9999) AS days_since_last_completed_task,
+        CASE
+            WHEN COALESCE(aa.days_since_last_email, 9999) <= 7
+             AND COALESCE(aa.days_since_last_call, 9999) <= 14
+             AND COALESCE(es.avg_email_sentiment, 0) > 0
             THEN 'High Engagement'
-            WHEN COALESCE(em.days_since_last_email, 9999) <= 30 
-             OR COALESCE(cm.days_since_last_call, 9999) <= 30
+            WHEN COALESCE(aa.days_since_last_email, 9999) <= 30
+              OR COALESCE(aa.days_since_last_call, 9999) <= 30
             THEN 'Medium Engagement'
             ELSE 'Low Engagement'
         END AS engagement_level,
-        CASE 
-            WHEN COALESCE(em.days_since_last_email, 9999) > 60 
-             AND COALESCE(cm.days_since_last_call, 9999) > 60
-            THEN TRUE ELSE FALSE 
+        CASE
+            WHEN COALESCE(aa.days_since_last_email, 9999) > 60
+             AND COALESCE(aa.days_since_last_call, 9999) > 60
+            THEN TRUE ELSE FALSE
         END AS is_ghosted,
-        CASE 
-            WHEN COALESCE(em.negative_email_count, 0) > 2 
-             OR COALESCE(em.risk_emails, 0) > 1
-            THEN TRUE ELSE FALSE 
+        CASE
+            WHEN COALESCE(es.negative_email_count, 0) > 2
+              OR COALESCE(es.risk_emails, 0) > 1
+            THEN TRUE ELSE FALSE
         END AS has_sentiment_risk,
         CURRENT_TIMESTAMP() AS metrics_timestamp
     FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY o
-    LEFT JOIN email_metrics em ON o.ID = em.opportunity_id
-    LEFT JOIN call_metrics cm ON o.ID = cm.opportunity_id
-    LEFT JOIN task_metrics tm ON o.ID = tm.opportunity_id
+    INNER JOIN activity_agg aa ON o.ID = aa.opportunity_id
+    LEFT JOIN email_sentiment es ON o.ID = es.opportunity_id
     WHERE o.SYSTEM_CURRENT_FLAG = 'Y'
-      AND o.IS_CLOSED = FALSE
 ) src
 ON tgt.OPPORTUNITY_ID = src.opportunity_id
 WHEN MATCHED THEN UPDATE SET
@@ -203,6 +268,7 @@ WHEN MATCHED THEN UPDATE SET
     tgt.EST_REVENUE_C = src.est_revenue_c,
     tgt.PROBABILITY = src.probability,
     tgt.CLOSE_DATE = src.close_date,
+    tgt.TOTAL_ACTIVITIES = src.total_activities,
     tgt.TOTAL_EMAILS = src.total_emails,
     tgt.INCOMING_EMAILS = src.incoming_emails,
     tgt.OUTGOING_EMAILS = src.outgoing_emails,
@@ -230,6 +296,7 @@ WHEN MATCHED THEN UPDATE SET
 WHEN NOT MATCHED THEN INSERT (
     OPPORTUNITY_ID, OPPORTUNITY_NAME, ACCOUNT_ID, OWNER_ID, STAGE_NAME,
     AMOUNT, EST_REVENUE_C, PROBABILITY, CLOSE_DATE, CREATED_DATE,
+    TOTAL_ACTIVITIES,
     TOTAL_EMAILS, INCOMING_EMAILS, OUTGOING_EMAILS, LAST_EMAIL_DATE,
     DAYS_SINCE_LAST_EMAIL, AVG_EMAIL_SENTIMENT, NEGATIVE_EMAIL_COUNT, RISK_EMAILS,
     TOTAL_CALLS, TOTAL_CALL_DURATION_SECONDS, AVG_CALL_DURATION_SECONDS,
@@ -240,6 +307,7 @@ WHEN NOT MATCHED THEN INSERT (
 ) VALUES (
     src.opportunity_id, src.opportunity_name, src.account_id, src.owner_id, src.stage_name,
     src.amount, src.est_revenue_c, src.probability, src.close_date, src.created_date,
+    src.total_activities,
     src.total_emails, src.incoming_emails, src.outgoing_emails, src.last_email_date,
     src.days_since_last_email, src.avg_email_sentiment, src.negative_email_count, src.risk_emails,
     src.total_calls, src.total_call_duration_seconds, src.avg_call_duration_seconds,

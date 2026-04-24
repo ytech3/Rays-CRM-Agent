@@ -40,7 +40,7 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 |-------|------|-------------|
 | `T_EMAIL_ENRICHED` | ~161K | Emails with AI sentiment, topic, signal, summary (llama3.1-70b) |
 | `T_EMAIL_ANALYTICS` | ~163K | Email records with direction, rep attribution, response times, sentiment |
-| `T_OPPORTUNITY_ACTIVITY_METRICS` | ~43,801 | Email/call/task counts, engagement levels, ghosting flags per opportunity |
+| `T_OPPORTUNITY_ACTIVITY_METRICS` | ~43,801 | Email/call/task counts + TOTAL_ACTIVITIES, engagement levels, ghosting flags per opportunity. **Sourced from dimensional model** (`v_fact_activities` + dims) matching Tableau "DM Salesforce Activities Prod". Filtered to 2026 season, Ticketing record type. Uses COUNT(DISTINCT V_FACT_ACTIVITIES_KEY) = Tableau COUNTD. |
 | `T_DEAL_HEALTH_SCORE` | ~2,948 | AI health scores (0–100), categories (Healthy/At Risk/Critical). Only scores deals in 'Initial Conversation' or 'In-Contact' stages. |
 | `T_CUSTOMER_360` | ~437,461 | Unified customer profiles with LTV, revenue tiers, churn risk, upsell flags |
 | `T_CALL_ACTIVITY` | ~86,453 | Zoom call records from Session History + Call Log, deduped by session_id |
@@ -62,7 +62,7 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 
 ```
 TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA guard, LIMIT 500)
-├── TSK_REFRESH_ACTIVITY_METRICS (child, pure SQL)
+├── TSK_REFRESH_ACTIVITY_METRICS (child, pure SQL, dimensional model source: v_fact_activities + dims, 2026 Ticketing only)
 ├── TSK_REFRESH_DEAL_HEALTH (grandchild, AI call, changed-only, stage filter: 'Initial Conversation' + 'In-Contact' only)
 ├── TSK_REFRESH_CUSTOMER_360 (grandchild, pure SQL)
 ├── TSK_REFRESH_EMAIL_ANALYTICS (grandchild, pure SQL, once-daily timestamp check)
