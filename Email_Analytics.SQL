@@ -49,14 +49,8 @@ BEGIN
                 e.RELATED_TO_ID,
                 e.PARENT_ID,
                 e.ACTIVITY_ID,
-                CASE 
-                    WHEN e.INCOMING = FALSE THEN u_from.ID
-                    ELSE o.OWNER_ID
-                END AS rep_user_id,
-                CASE 
-                    WHEN e.INCOMING = FALSE THEN u_from.NAME
-                    ELSE u_owner.NAME
-                END AS rep_name,
+                u_creator.ID AS rep_user_id,
+                u_creator.NAME AS rep_name,
                 o.ID AS opportunity_id,
                 o.NAME AS opportunity_name,
                 o.ACCOUNT_ID,
@@ -65,16 +59,16 @@ BEGIN
                 ee.EMAIL_TOPIC,
                 ee.EMAIL_SIGNAL
             FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_CRM_EMAIL_MESSAGE e
-            LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_USER u_from
-                ON LOWER(e.FROM_ADDRESS) = LOWER(u_from.EMAIL)
+            LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_USER_CURRENT u_creator
+                ON e.CREATED_BY_ID = u_creator.ID
             LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY o
                 ON e.RELATED_TO_ID = o.ID
                 AND o.SYSTEM_CURRENT_FLAG = 'Y'
-            LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_USER u_owner
-                ON o.OWNER_ID = u_owner.ID
             LEFT JOIN TBRDP_DW_PROD.IM_RPT.T_EMAIL_ENRICHED ee
                 ON e.ID = ee.EMAIL_ID
             WHERE e.MESSAGE_DATE IS NOT NULL
+              AND e.SYSTEM_CURRENT_FLAG = 'Y'
+              AND e.IS_DELETED = FALSE
         ),
         response_pairs AS (
             SELECT 

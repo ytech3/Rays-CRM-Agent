@@ -42,7 +42,8 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		SALESFORCE_TASKS as TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_TASKS_CURRENT primary key (ID) with synonyms=('tasks','to-dos','follow-ups','action items','salesforce tasks','task list') comment='Individual Salesforce task records, pre-deduplicated for SCD Type 2 safety. Contains due dates (ACTIVITY_DATE), status, type, priority, and foreign keys to opportunities (WHAT_ID) and reps (OWNER_ID). Use for listing tasks by rep, filtering by due date range, or sorting by linked opportunity revenue.',
     CALL_ACTIVITY as TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY primary key (SESSION_ID) with synonyms=('call activity','call data','call log','call metrics','calls','phone activity','phone calls','zoom calls') comment='Unified call activity from Zoom Contact Center (Session History) and Zoom Phone (Call Log). Contains call direction, talk time, duration, agent attribution, notes, and opportunity linkage. All timestamps in Eastern Time to match Tableau dashboard.',
     GAME_ATTENDANCE as TBRDP_DW_PROD.IM_RPT.V_CUSTOMER_GAME_ATTENDANCE primary key (FINANCIAL_PATRON_ACCOUNT_ID) with synonyms=('game attendance','attendance summary','games attended summary','win loss record','fan attendance summary') comment='Aggregated game attendance metrics per customer based on scanned tickets (IS_SCANNED=1). Use for summary stats like total games attended, win percentage, total spend. Covers 2023-2025 seasons.',
-    GAME_ATTENDANCE_DETAIL as TBRDP_DW_PROD.IM_RPT.V_CUSTOMER_GAME_ATTENDANCE_DETAIL primary key (FINANCIAL_PATRON_ACCOUNT_ID, GAMEPK) with synonyms=('game history','individual games','specific games attended','game dates','which games','what games') comment='Individual game attendance records with dates, opponents, scores, and outcomes. Use when asking about specific games a customer attended, game dates, or drill-down from summary stats. Scan-based (IS_SCANNED=1), 2023-2025 seasons.'
+    GAME_ATTENDANCE_DETAIL as TBRDP_DW_PROD.IM_RPT.V_CUSTOMER_GAME_ATTENDANCE_DETAIL primary key (FINANCIAL_PATRON_ACCOUNT_ID, GAMEPK) with synonyms=('game history','individual games','specific games attended','game dates','which games','what games') comment='Individual game attendance records with dates, opponents, scores, and outcomes. Use when asking about specific games a customer attended, game dates, or drill-down from summary stats. Scan-based (IS_SCANNED=1), 2023-2025 seasons.',
+    ACTIVITY_DETAIL as TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY primary key (ACTIVITY_KEY) with synonyms=('activity detail','dimensional activities','tableau activities','activity counts','rep activities','activity summary') comment='Individual activity records sourced from the same dimensional model as Tableau "DM Salesforce Activities Prod". Use for COUNTING activities by rep and date range — produces exact Tableau-matching counts. Use COUNT(DISTINCT ACTIVITY_KEY) to match Tableau COUNTD. For email CONTENT analysis use EMAIL_ANALYTICS. For call NOTES use CALL_ACTIVITY.'
   )
 	relationships (
 		OPPORTUNITIES_TO_ACTIVITY as OPPORTUNITIES(ID) references ACTIVITY_METRICS(OPPORTUNITY_ID),
@@ -56,7 +57,9 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		TASKS_TO_OWNER as SALESFORCE_TASKS(OWNER_ID) references USERS(ID),
     CALL_TO_OPPORTUNITY as CALL_ACTIVITY(OPPORTUNITY_ID) references OPPORTUNITIES(ID),
     CALL_TO_USER as CALL_ACTIVITY(AGENT_OWNER_ID) references USERS(ID),
-    CUSTOMER_TO_GAME_ATTENDANCE as CUSTOMER_360(PATRON_ACCOUNT_ID) references GAME_ATTENDANCE(FINANCIAL_PATRON_ACCOUNT_ID)
+    CUSTOMER_TO_GAME_ATTENDANCE as CUSTOMER_360(PATRON_ACCOUNT_ID) references GAME_ATTENDANCE(FINANCIAL_PATRON_ACCOUNT_ID),
+    ACTIVITY_DETAIL_TO_OPPORTUNITY as ACTIVITY_DETAIL(OPPORTUNITY_ID) references OPPORTUNITIES(ID),
+    ACTIVITY_DETAIL_TO_REP as ACTIVITY_DETAIL(REP_USER_ID) references USERS(ID)
   )
 	facts (
 		OPPORTUNITIES.DEAL_AMOUNT as opportunities.AMOUNT comment='Revenue amount of the opportunity',
@@ -68,6 +71,7 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     ACTIVITY_METRICS.TOTAL_CALLS_COUNT as activity_metrics.TOTAL_CALLS comment='Total call count for this opportunity',
     ACTIVITY_METRICS.DAYS_SINCE_CONTACT as activity_metrics.DAYS_SINCE_LAST_EMAIL comment='Number of days since last email contact',
     ACTIVITY_METRICS.AVG_SENTIMENT_SCORE as activity_metrics.AVG_EMAIL_SENTIMENT comment='Average email sentiment score (-1 to 1)',
+    ACTIVITY_METRICS.OVERDUE_TASK_COUNT_VALUE as activity_metrics.OVERDUE_TASK_COUNT with synonyms=('overdue tasks','past due tasks','late tasks') comment='Number of open tasks past their due date for this opportunity',
 		CUSTOMER_360.CUST_TICKET_REV as customer_360.TOTAL_TICKET_REVENUE comment='Total actual ticket purchase revenue for this customer across all seasons',
 		CUSTOMER_360.CUST_CRM_WON_REV as customer_360.CRM_WON_REVENUE comment='Total CRM opportunity won revenue for this customer',
 		CUSTOMER_360.CUST_LTV as customer_360.ESTIMATED_LIFETIME_VALUE comment='Estimated customer lifetime value (greater of CRM won or ticket revenue)',
@@ -97,7 +101,8 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     GAME_ATTENDANCE_DETAIL.DETAIL_TICKETS as game_attendance_detail.TICKETS_PURCHASED with synonyms=('tickets bought','tickets for game','how many tickets') comment='Number of tickets purchased for this specific game',
     GAME_ATTENDANCE_DETAIL.DETAIL_SPEND as game_attendance_detail.TICKET_SPEND with synonyms=('game spend','spent on game','ticket cost for game') comment='Amount spent on tickets for this specific game',
     GAME_ATTENDANCE_DETAIL.DETAIL_HOME_SCORE as game_attendance_detail.HOME_SCORE comment='Home team score for this game',
-    GAME_ATTENDANCE_DETAIL.DETAIL_AWAY_SCORE as game_attendance_detail.AWAY_SCORE comment='Away team score for this game'
+    GAME_ATTENDANCE_DETAIL.DETAIL_AWAY_SCORE as game_attendance_detail.AWAY_SCORE comment='Away team score for this game',
+    ACTIVITY_DETAIL.DIM_CALL_DURATION as activity_detail.CALL_DURATION_SECONDS comment='Call duration in seconds from the dimensional model'
   )
 	dimensions (
 		OPPORTUNITIES.OPP_NAME as opportunities.NAME with synonyms=('opportunity name','deal name') comment='Name of the sales opportunity',
@@ -113,10 +118,14 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		OPPORTUNITIES.PRIMARY_OBJECTION as opportunities.OBJECTIONS_C with synonyms=('objection','loss reason','why lost','closed lost reason','primary objection') comment='Primary objection or reason the deal was lost. Top values: Neglect Meter, Season Over, Bad Contact/No Response, Financial, Not a Fan, Too Far to Drive, Schedule/Time, Working with another rep. NULL if not recorded.',
 		OPPORTUNITIES.SECONDARY_OBJECTION as opportunities.SECONDARY_OBJECTIONS_C with synonyms=('secondary objection','objection detail','loss detail','secondary reason') comment='Secondary objection providing additional detail on why the deal was lost. Examples: Never Answered, Season Over, Bad Phone Number, Not Interested, Stadium location. NULL if not recorded.',
 		DEAL_HEALTH.HEALTH_CATEGORY as deal_health.HEALTH_CATEGORY with synonyms=('health status','deal health','risk level') comment='Health category: Healthy, At Risk, or Critical',
-		DEAL_HEALTH.IS_AT_RISK as (deal_health.HEALTH_CATEGORY IN ('At Risk', 'Critical')) with synonyms=('at risk flag','risky deals') comment='Boolean flag for at-risk opportunities',
+    DEAL_HEALTH.IS_AT_RISK as (deal_health.HEALTH_CATEGORY IN ('At Risk', 'Critical')) with synonyms=('at risk flag','risky deals') comment='Boolean flag for at-risk opportunities',
+    DEAL_HEALTH.DEAL_TASK_URGENCY as deal_health.TASK_URGENCY with synonyms=('deal task urgency','health task urgency') comment='Task urgency for scored deals: Overdue, Due Today, Next 7 Days, Later, or No Open Tasks',
 		ACTIVITY_METRICS.ENGAGEMENT_LEVEL as activity_metrics.ENGAGEMENT_LEVEL with synonyms=('activity level','engagement score') comment='Engagement level: High, Medium, or Low',
 		ACTIVITY_METRICS.HAS_SENTIMENT_RISK as activity_metrics.HAS_SENTIMENT_RISK with synonyms=('negative sentiment flag','sentiment risk') comment='Whether the opportunity has negative email sentiment (risk indicator)',
-		ACTIVITY_METRICS.IS_GHOSTED_FLAG as activity_metrics.IS_GHOSTED with synonyms=('ghosted status','no recent contact') comment='Whether opportunity has had no contact for 60+ days',
+    ACTIVITY_METRICS.IS_GHOSTED_FLAG as activity_metrics.IS_GHOSTED with synonyms=('ghosted status','no recent contact') comment='Whether opportunity has had no contact for 60+ days',
+    ACTIVITY_METRICS.TASK_URGENCY_LEVEL as activity_metrics.TASK_URGENCY with synonyms=('task urgency','upcoming task status','task priority level','overdue status') comment='Task urgency category: Overdue (past due, highest priority), Due Today, Next 7 Days, Later, or No Open Tasks. This is the PRIMARY urgency signal — prioritize over close date.',
+    ACTIVITY_METRICS.NEXT_TASK_DUE_DATE as activity_metrics.NEXT_TASK_DATE with synonyms=('next task date','upcoming task date','next due date','soonest task') comment='Date of the earliest open task for this opportunity. Use as the primary scheduling signal instead of close date.',
+    ACTIVITY_METRICS.NEXT_TASK_NAME as activity_metrics.NEXT_TASK_SUBJECT with synonyms=('next task subject','upcoming task name','next action item') comment='Subject line of the next upcoming or overdue task for this opportunity',
 		USERS.REP_NAME as users.NAME with synonyms=('sales rep','account executive','owner name') comment='Name of the sales representative',
 		USERS.REP_EMAIL as users.EMAIL with synonyms=('owner email') comment='Email address of the sales representative',
 		USERS.IS_ACTIVE as users.IS_ACTIVE with synonyms=('active rep','active user') comment='Whether the sales rep is currently active',
@@ -188,7 +197,7 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		CALL_ACTIVITY.CALL_START_TIME as CALL_START_TIME with synonyms=('call date','call time','when was the call') comment='Date and time when the call started (Eastern Time)',
 		CALL_ACTIVITY.CALL_END_TIME as CALL_END_TIME comment='Date and time when the call ended (Eastern Time)',
 		CALL_ACTIVITY.CALL_MONTH as DATE_TRUNC('MONTH', CALL_START_TIME) with synonyms=('call month','monthly calls') comment='Month of the call for trend analysis (Eastern Time)',
-		CALL_ACTIVITY.CALL_WEEK as DATE_TRUNC('WEEK', CALL_START_TIME) with synonyms=('call week','weekly calls') comment='Week of the call for trend analysis (Eastern Time)',
+		CALL_ACTIVITY.CALL_WEEK as DATEADD('day', -DAYOFWEEK(DATE(CALL_START_TIME)), DATE(CALL_START_TIME)) with synonyms=('call week','weekly calls') comment='Week of the call (Sunday start) for trend analysis (Eastern Time)',
 		CALL_ACTIVITY.CALL_DATE as DATE(CALL_START_TIME) with synonyms=('date of call') comment='Date of the call (no time component, Eastern Time)',
 		CALL_ACTIVITY.CREATED_DATE as CREATED_DATE comment='When the Salesforce record was created (Eastern Time)',
 		CALL_ACTIVITY.LAST_MODIFIED_DATE as LAST_MODIFIED_DATE comment='When the record was last modified (Eastern Time)',
@@ -208,7 +217,13 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     GAME_ATTENDANCE_DETAIL.DETAIL_RAYS_WIN as game_attendance_detail.RAYS_WIN with synonyms=('did rays win','rays won','win or loss') comment='Whether Rays won this game (true/false)',
     GAME_ATTENDANCE_DETAIL.DETAIL_GAME_RESULT as game_attendance_detail.GAME_RESULT with synonyms=('game result','outcome','win loss','W or L') comment='Game result: WIN or LOSS',
     GAME_ATTENDANCE_DETAIL.DETAIL_RAYS_HOME as game_attendance_detail.RAYS_HOME with synonyms=('home game','rays at home','home or away') comment='Whether Rays were the home team for this game',
-    GAME_ATTENDANCE_DETAIL.DETAIL_GAMEPK as game_attendance_detail.GAMEPK with synonyms=('game id','mlb game id','game pk') comment='MLB Game ID — unique identifier for each game'
+    GAME_ATTENDANCE_DETAIL.DETAIL_GAMEPK as game_attendance_detail.GAMEPK with synonyms=('game id','mlb game id','game pk') comment='MLB Game ID — unique identifier for each game',
+    ACTIVITY_DETAIL.DIM_ACTIVITY_DATE as activity_detail.ACTIVITY_DATE with synonyms=('activity date','dim activity date','date of activity') comment='Date the activity occurred. Use range-based filtering: ACTIVITY_DATE >= start AND ACTIVITY_DATE <= end.',
+    ACTIVITY_DETAIL.DIM_ACTIVITY_SUBTYPE as activity_detail.ACTIVITY_SUBTYPE with synonyms=('activity category','email call task','activity subtype') comment='Activity category: Email, Call, Task, ListEmail. Use for high-level activity breakdowns.',
+    ACTIVITY_DETAIL.DIM_ACTIVITY_TYPE as activity_detail.ACTIVITY_TYPE with synonyms=('activity type detail','call inbound outbound','specific activity type') comment='Specific activity type: "Call Inbound", "Call Outbound", "Email", "Task", etc. Use ACTIVITY_TYPE for direction breakdown on calls.',
+    ACTIVITY_DETAIL.DIM_ACTIVITY_STATUS as activity_detail.ACTIVITY_STATUS with synonyms=('activity status','completed open') comment='Activity status: Completed, Open, In Progress.',
+    ACTIVITY_DETAIL.DIM_REP_NAME as activity_detail.REP_NAME with synonyms=('activity rep','activity owner','dim rep name') comment='Name of the rep who owns this activity — from the dimensional model activity owner, matches Tableau attribution.',
+    ACTIVITY_DETAIL.DIM_EMAIL_INCOMING as activity_detail.EMAIL_INCOMING with synonyms=('email direction dim','inbound outbound email dim') comment='Whether this email was incoming (TRUE) or outgoing (FALSE). Only populated for Email subtype.'
   )
 	metrics (
 		OPPORTUNITIES.TOTAL_PIPELINE_VALUE as SUM(opportunities.deal_amount) comment='Total value of all opportunities in the pipeline',
@@ -234,7 +249,9 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
 		ACTIVITY_METRICS.TOTAL_EMAIL_VOLUME as SUM(activity_metrics.total_emails_count) comment='Total number of emails across all opportunities',
 		ACTIVITY_METRICS.TOTAL_CALL_VOLUME as SUM(activity_metrics.total_calls_count) comment='Total number of calls across all opportunities',
 		ACTIVITY_METRICS.AVG_EMAILS_PER_DEAL as AVG(activity_metrics.total_emails_count) comment='Average number of emails per opportunity',
-		ACTIVITY_METRICS.GHOSTED_DEAL_COUNT as COUNT(CASE WHEN activity_metrics.is_ghosted_flag = TRUE THEN 1 END) comment='Number of opportunities with no contact for 60+ days',
+    ACTIVITY_METRICS.GHOSTED_DEAL_COUNT as COUNT(CASE WHEN activity_metrics.is_ghosted_flag = TRUE THEN 1 END) comment='Number of opportunities with no contact for 60+ days',
+    ACTIVITY_METRICS.OVERDUE_TASK_TOTAL as SUM(activity_metrics.overdue_task_count_value) with synonyms=('total overdue tasks','all overdue tasks','past due task count') comment='Total number of overdue tasks across all opportunities',
+    ACTIVITY_METRICS.DEALS_WITH_OVERDUE_TASKS as COUNT(CASE WHEN activity_metrics.task_urgency_level = 'Overdue' THEN 1 END) with synonyms=('opportunities with overdue tasks','deals needing attention','overdue task deals') comment='Number of opportunities that have at least one overdue task — highest priority deals',
 		CUSTOMER_360.AGG_TICKET_REVENUE as SUM(customer_360.cust_ticket_rev) with synonyms=('actual revenue','ticket sales revenue','purchase revenue','total purchases','total ticket revenue') comment='Total actual ticket purchase revenue across all customers',
 		CUSTOMER_360.AGG_LIFETIME_VALUE as SUM(customer_360.cust_ltv) with synonyms=('total LTV','combined lifetime value','customer value total','total lifetime value') comment='Total estimated lifetime value across all customers',
 		CUSTOMER_360.AGG_AVG_LTV as AVG(customer_360.cust_ltv) with synonyms=('average LTV','average customer value','mean lifetime value','average lifetime value') comment='Average estimated lifetime value per customer',
@@ -277,11 +294,17 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     GAME_ATTENDANCE.CUSTOMERS_WITH_HIGH_WIN_PCT as COUNT(CASE WHEN game_attendance.win_percentage_attended >= 60 THEN 1 END) with synonyms=('lucky customers','high win rate fans') comment='Number of customers who attended games with 60%+ Rays win rate',
     GAME_ATTENDANCE_DETAIL.DETAIL_GAME_COUNT as COUNT(DISTINCT game_attendance_detail.detail_gamepk) with synonyms=('games in detail','number of game records','unique games') comment='Count of distinct games in attendance detail records',
     GAME_ATTENDANCE_DETAIL.DETAIL_WINS_COUNT as COUNT(CASE WHEN game_attendance_detail.detail_rays_win = TRUE THEN 1 END) with synonyms=('wins in detail','detail win count') comment='Count of Rays wins in game detail records',
-    GAME_ATTENDANCE_DETAIL.DETAIL_LOSSES_COUNT as COUNT(CASE WHEN game_attendance_detail.detail_rays_win = FALSE THEN 1 END) with synonyms=('losses in detail','detail loss count') comment='Count of Rays losses in game detail records'
+    GAME_ATTENDANCE_DETAIL.DETAIL_LOSSES_COUNT as COUNT(CASE WHEN game_attendance_detail.detail_rays_win = FALSE THEN 1 END) with synonyms=('losses in detail','detail loss count') comment='Count of Rays losses in game detail records',
+    ACTIVITY_DETAIL.DIM_TOTAL_ACTIVITIES as COUNT(DISTINCT activity_detail.ACTIVITY_KEY) with synonyms=('dim total activities','tableau activity count','exact activity count') comment='Total activity count matching Tableau COUNTD. Use this for all rep-level activity counting queries.',
+    ACTIVITY_DETAIL.DIM_TOTAL_EMAILS as COUNT(DISTINCT CASE WHEN activity_detail.dim_activity_subtype = 'Email' THEN activity_detail.ACTIVITY_KEY END) with synonyms=('dim email count','tableau email count','exact email count') comment='Email count matching Tableau. Use for rep-level email counting.',
+    ACTIVITY_DETAIL.DIM_TOTAL_CALLS as COUNT(DISTINCT CASE WHEN activity_detail.dim_activity_subtype = 'Call' THEN activity_detail.ACTIVITY_KEY END) with synonyms=('dim call count','tableau call count','exact call count') comment='Call count matching Tableau. Use for rep-level call counting.',
+    ACTIVITY_DETAIL.DIM_INBOUND_CALLS as COUNT(DISTINCT CASE WHEN activity_detail.dim_activity_type = 'Call Inbound' THEN activity_detail.ACTIVITY_KEY END) with synonyms=('dim inbound calls','tableau inbound calls','exact inbound count') comment='Inbound call count matching Tableau.',
+    ACTIVITY_DETAIL.DIM_OUTBOUND_CALLS as COUNT(DISTINCT CASE WHEN activity_detail.dim_activity_type = 'Call Outbound' THEN activity_detail.ACTIVITY_KEY END) with synonyms=('dim outbound calls','tableau outbound calls','exact outbound count') comment='Outbound call count matching Tableau.',
+    ACTIVITY_DETAIL.DIM_TOTAL_TASKS as COUNT(DISTINCT CASE WHEN activity_detail.dim_activity_subtype = 'Task' THEN activity_detail.ACTIVITY_KEY END) with synonyms=('dim task count','tableau task count','exact task count') comment='Task count matching Tableau.'
   )
 	-- NOTE: After running this CREATE OR REPLACE, re-add named filter in Snowsight editor:
 	--   CURRENT_RECORDS_ONLY → SYSTEM_CURRENT_FLAG = 'Y' on OPPORTUNITIES table
-  comment='Semantic view for CRM sales intelligence (10 tables) — enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call activity metrics by rep and date, individual Salesforce task queries by rep, due date, and status, closed lost objection/loss reason analysis, and game attendance metrics (summary and per-game detail with opponents, scores, and outcomes).'
+  comment='Semantic view for CRM sales intelligence (11 tables) — enables natural language queries about pipeline, deal health, rep performance across 5 departments, customer lifetime value, ticket purchase attribution, customer segmentation, email volume, send time optimization, response time analysis, call activity metrics by rep and date, individual Salesforce task queries by rep, due date, and status, closed lost objection/loss reason analysis, game attendance metrics (summary and per-game detail with opponents, scores, and outcomes), and Tableau-matching activity counts by rep and date range via ACTIVITY_DETAIL.'
 	ai_sql_generation $$
     When generating SQL:
     1. Always filter for SYSTEM_CURRENT_FLAG = 'Y' on the OPPORTUNITIES table AND the USERS table to get current records only. The USERS table (V_SALESFORCE_USER_CURRENT) is already pre-filtered, but OPPORTUNITIES (V_ODS_SALESFORCE_OPPORTUNITY) still requires an explicit WHERE SYSTEM_CURRENT_FLAG = 'Y' in every query.
@@ -291,6 +314,14 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
        - For this year: field >= DATE_TRUNC('YEAR', CURRENT_DATE()) AND field < DATEADD('YEAR', 1, DATE_TRUNC('YEAR', CURRENT_DATE()))
        - For last month: field >= DATEADD('MONTH', -1, DATE_TRUNC('MONTH', CURRENT_DATE())) AND field < DATE_TRUNC('MONTH', CURRENT_DATE())
        - For a specific month: field >= '2026-02-01'::TIMESTAMP_NTZ AND field < '2026-03-01'::TIMESTAMP_NTZ
+       - WEEK CONVENTION (Sunday–Saturday): Do NOT use DATE_TRUNC('week', ...) for weekly filtering — Snowflake defaults to Monday. Instead, always calculate Sunday-based week boundaries using DAYOFWEEK() which returns 0=Sunday, 1=Monday, ..., 6=Saturday:
+         * Start of this week (Sunday): DATEADD('day', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
+         * End of this week (Saturday night): DATEADD('day', 7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
+         * Start of last week (previous Sunday): DATEADD('day', -7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
+         * For "this week": field >= DATEADD('day', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE()) AND field < DATEADD('day', 7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
+         * For "last week": field >= DATEADD('day', -7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE()) AND field < DATEADD('day', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
+         * For TIMESTAMP fields, cast the boundary to TIMESTAMP: field >= DATEADD('day', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())::TIMESTAMP_NTZ
+         * This applies to ALL tables and ALL date/timestamp fields when filtering by week.
     3. Round currency values to 2 decimal places
     4. For percentage metrics, multiply by 1 to ensure numeric display
     5. When showing health scores, include the health_category for context
@@ -330,9 +361,9 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
           AND CALL_START_TIME < [date_range_end]
         GROUP BY AGENT_NAME, CALL_DIRECTION
     30. CALL_SOURCE distinguishes Contact Center (SESSION_HISTORY) from Zoom Phone (ZOOM_CALL_LOG). Most reps have calls in both sources — do not filter by source unless the user specifically asks.
-    31. TASK QUERIES — salesforce_tasks.ACTIVITY_DATE is a DATE field (not TIMESTAMP). Use direct date comparisons only — do NOT cast to TIMESTAMP:
-        - For "last week" (previous calendar week, Sun–Sat): ACTIVITY_DATE >= DATEADD('week', -1, DATE_TRUNC('week', CURRENT_DATE())) AND ACTIVITY_DATE < DATE_TRUNC('week', CURRENT_DATE())
-        - For "this week": ACTIVITY_DATE >= DATE_TRUNC('week', CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD('week', 1, DATE_TRUNC('week', CURRENT_DATE()))
+    31. TASK QUERIES — salesforce_tasks.ACTIVITY_DATE is a DATE field (not TIMESTAMP). Use direct date comparisons only — do NOT cast to TIMESTAMP. Use Sunday–Saturday week boundaries (see rule 2 WEEK CONVENTION):
+        - For "last week" (previous calendar week, Sun–Sat): ACTIVITY_DATE >= DATEADD('day', -7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD('day', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
+        - For "this week" (current Sun–Sat): ACTIVITY_DATE >= DATEADD('day', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD('day', 7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
         - For "today": ACTIVITY_DATE = CURRENT_DATE()
         - For "overdue" (past due and not yet closed): ACTIVITY_DATE < CURRENT_DATE() AND salesforce_tasks.IS_CLOSED = FALSE
         - For "next 7 days": ACTIVITY_DATE > CURRENT_DATE() AND ACTIVITY_DATE <= DATEADD('day', 7, CURRENT_DATE())
@@ -345,6 +376,12 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     38. When filtering game attendance by season, use game_attendance_detail.SEASON_YEAR (e.g., 2024). When filtering by opponent, use game_attendance_detail.OPPONENT with team abbreviations (e.g., 'BOS', 'NYY', 'BAL').
     39. For game results, RAYS_WIN is a boolean and GAME_RESULT is 'WIN' or 'LOSS'. Use GAME_RESULT for display and RAYS_WIN for boolean filtering.
     40. When asked about a customer's game history alongside their CRM data, join through CUSTOMER_360 using the CUSTOMER_TO_GAME_ATTENDANCE relationship. GAME_ATTENDANCE_DETAIL shares FINANCIAL_PATRON_ACCOUNT_ID with GAME_ATTENDANCE for drill-down.
+    41. ACTIVITY COUNTING (CRITICAL) — For rep-level activity counts by date range (e.g., "how many calls/emails did rep X make this week", "activity breakdown for Brandon Harnick"), ALWAYS use the ACTIVITY_DETAIL table — NOT email_analytics or call_activity. The ACTIVITY_DETAIL table sources from the same dimensional model as Tableau and produces exact-match counts. Use ACTIVITY_TYPE for direction: 'Call Inbound', 'Call Outbound'. Use ACTIVITY_SUBTYPE for category: 'Email', 'Call', 'Task'. Use COUNT(DISTINCT ACTIVITY_KEY) to match Tableau COUNTD. Filter by REP_NAME ILIKE '%rep name%' and ACTIVITY_DATE range.
+    42. Use EMAIL_ANALYTICS only for email content analysis, response times, sentiment, send-time optimization, and individual email details. Use CALL_ACTIVITY only for call notes, voicemail content, and detailed call session data. For COUNTING activities by rep and date, always use ACTIVITY_DETAIL.
+    43. When the user says "emails" in a counting context (how many emails did X send, email count by rep this week), use ACTIVITY_DETAIL with ACTIVITY_SUBTYPE = 'Email'. When they want email content, sentiment, or response times, use EMAIL_ANALYTICS. When they say "calls" in a counting context (how many calls, call volume by rep), use ACTIVITY_DETAIL with ACTIVITY_SUBTYPE = 'Call'. When they want call notes or voicemail content, use CALL_ACTIVITY.
+    44. ACTIVITY_DETAIL date filtering — ACTIVITY_DATE is a DATE field. Use direct date comparisons: ACTIVITY_DATE >= '2026-04-12' AND ACTIVITY_DATE <= '2026-04-18'. Do NOT cast to TIMESTAMP.
+    45. TASK URGENCY PRIORITIZATION — When asked about "urgent deals", "what needs attention", "priority opportunities", "next actions", "what should I work on", or any prioritization question, use TASK_URGENCY as the PRIMARY urgency signal. Order by task urgency: Overdue first (highest priority), then Due Today, then Next 7 Days. Close date is a SECONDARY consideration — only use it as a tiebreaker within the same urgency tier. For aggregate views, use activity_metrics.TASK_URGENCY. For scored deals, use deal_health.TASK_URGENCY. Example: ORDER BY CASE WHEN activity_metrics.TASK_URGENCY = 'Overdue' THEN 1 WHEN activity_metrics.TASK_URGENCY = 'Due Today' THEN 2 WHEN activity_metrics.TASK_URGENCY = 'Next 7 Days' THEN 3 WHEN activity_metrics.TASK_URGENCY = 'Later' THEN 4 ELSE 5 END, activity_metrics.NEXT_TASK_DATE ASC NULLS LAST.
+    46. When asked about overdue tasks at the opportunity level (aggregated counts, which deals have overdue tasks), use ACTIVITY_METRICS.OVERDUE_TASK_COUNT and ACTIVITY_METRICS.TASK_URGENCY. When asked about individual overdue tasks (list each task), use SALESFORCE_TASKS with filter ACTIVITY_DATE < CURRENT_DATE() AND IS_CLOSED = FALSE.
   $$
 	ai_question_categorization $$
     Question Classification Rules:
@@ -382,6 +419,13 @@ CREATE OR REPLACE SEMANTIC VIEW TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     - Game attendance by season, by opponent, home vs away
     - Customer game history alongside CRM and ticket purchase data
     - Fans with high win percentages (lucky customers)
+    - Activity counts by rep and date range (exact Tableau-matching via ACTIVITY_DETAIL)
+    - How many emails/calls/tasks did a rep make this week/month
+    - Activity breakdown by type (Email, Call, Task) and direction (Inbound, Outbound)
+    - Task urgency: which deals have overdue tasks, what needs immediate attention
+    - Priority-based deal views: deals ordered by task urgency rather than close date
+    - Overdue task counts by rep, department, or opportunity
+    - Next upcoming task date and subject for opportunities
 
     CLARIFICATION NEEDED for vague questions like:
     - Show me deals without time frame or filters

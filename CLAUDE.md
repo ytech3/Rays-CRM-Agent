@@ -14,8 +14,9 @@ There are no build, lint, or test commands. Changes are deployed by executing SQ
 
 ## Files
 
-- **Semantic_View.SQL** — Defines `SV_CRM_SALES_INTELLIGENCE`, the Snowflake Semantic View (10 logical tables) used by Cortex Analyst for natural-language SQL queries.
-- **Tasks.SQL** — Defines the 6-task DAG: root `TSK_ENRICH_NEW_EMAILS` (120-min), child tasks for activity metrics, deal health, customer 360, email analytics, and call activity. Also defines the 5 append-only streams.
+- **Semantic_View.SQL** — Defines `SV_CRM_SALES_INTELLIGENCE`, the Snowflake Semantic View (11 logical tables) used by Cortex Analyst for natural-language SQL queries.
+- **Tasks.SQL** — Defines the 7-task DAG: root `TSK_ENRICH_NEW_EMAILS` (120-min), child tasks for activity metrics, deal health, customer 360, email analytics, call activity, and dimensional activity summary. Also defines the 5 append-only streams.
+- **DIM_Activity_Summary.SQL** — Defines `T_DIM_ACTIVITY_SUMMARY`, the dimensional model activity detail table for exact Tableau-matching activity counts by rep, date, and direction. Also defines `TSK_REFRESH_DIM_ACTIVITY_SUMMARY` (once-daily rebuild).
 - **CUSTOMER_360.SQL** — Defines `T_CUSTOMER_360`, the unified customer profile table with LTV, revenue tiers, churn risk, and upsell flags. Refreshed by `TSK_REFRESH_CUSTOMER_360`.
 - **T_Call_Activity.SQL** — Defines `T_CALL_ACTIVITY`, a permanent table unioning Zoom Session History and Zoom Call Log call records. Also defines `TSK_REFRESH_CALL_ACTIVITY`, the incremental task that appends new records daily.
 - **Email_Analytics.SQL** — Defines `T_EMAIL_ANALYTICS`, a permanent table of individual email records with direction, rep attribution, response times, sentiment, and time-of-day buckets.
@@ -40,10 +41,11 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 |-------|------|-------------|
 | `T_EMAIL_ENRICHED` | ~161K | Emails with AI sentiment, topic, signal, summary (llama3.1-70b) |
 | `T_EMAIL_ANALYTICS` | ~163K | Email records with direction, rep attribution, response times, sentiment |
-| `T_OPPORTUNITY_ACTIVITY_METRICS` | ~43,801 | Email/call/task counts + TOTAL_ACTIVITIES, engagement levels, ghosting flags per opportunity. **Sourced from dimensional model** (`v_fact_activities` + dims) matching Tableau "DM Salesforce Activities Prod". Filtered to 2026 season, Ticketing record type. Uses COUNT(DISTINCT V_FACT_ACTIVITIES_KEY) = Tableau COUNTD. |
-| `T_DEAL_HEALTH_SCORE` | ~2,948 | AI health scores (0–100), categories (Healthy/At Risk/Critical). Only scores deals in 'Initial Conversation' or 'In-Contact' stages. |
+| `T_OPPORTUNITY_ACTIVITY_METRICS` | ~43,801 | Email/call/task counts + TOTAL_ACTIVITIES, engagement levels, ghosting flags, **task urgency** (OVERDUE_TASK_COUNT, NEXT_TASK_DATE, NEXT_TASK_SUBJECT, TASK_URGENCY) per opportunity. **Sourced from dimensional model** (`v_fact_activities` + dims) matching Tableau "DM Salesforce Activities Prod". Task urgency sourced from `V_SALESFORCE_TASKS_CURRENT`. Filtered to 2026 season, Ticketing record type. Uses COUNT(DISTINCT V_FACT_ACTIVITIES_KEY) = Tableau COUNTD. |
+| `T_DEAL_HEALTH_SCORE` | ~2,948 | AI health scores (0–100), categories (Healthy/At Risk/Critical), **task urgency columns** (OVERDUE_TASK_COUNT, NEXT_TASK_DATE, TASK_URGENCY). Health score formula penalizes overdue tasks (-15 to -25 pts) and rewards upcoming tasks. Only scores deals in 'Initial Conversation' or 'In-Contact' stages. |
 | `T_CUSTOMER_360` | ~437,461 | Unified customer profiles with LTV, revenue tiers, churn risk, upsell flags |
 | `T_CALL_ACTIVITY` | ~86,453 | Zoom call records from Session History + Call Log, deduped by session_id |
+| `T_DIM_ACTIVITY_SUMMARY` | ~1,020K | Individual activity records from the Tableau dimensional model (v_fact_activities + dims). Use for exact Tableau-matching activity counts by rep, date, direction. ALL activities (no season/record-type filter). Refreshed daily by `TSK_REFRESH_DIM_ACTIVITY_SUMMARY`. |
 | `T_TICKET_TEAM_DEPARTMENT_MAPPING` | 43 reps | 8 departments: TICKET_SALES (7), TICKET_SERVICE (5), TICKET_MEMBER_AE (4), TICKET_TSR (4), CORPORATE_PARTNERSHIP_SALES (6), TICKET_LEADERSHIP (11), TICKET_INTERN (4), CALL_CENTER (2). USER_NAME column is VARCHAR(50). |
 
 ### Streams (5 active, append-only)
@@ -58,7 +60,7 @@ Salesforce data lands via Fivetran into source views → Streams detect changes 
 
 **Stream staleness**: Streams go stale if not consumed within ~14 days. If a stream shows `stale=true` in `SHOW STREAMS`, recreate it with `CREATE OR REPLACE STREAM ... ON VIEW ... APPEND_ONLY = TRUE`.
 
-### Task DAG (6 tasks, 2-hour cycle)
+### Task DAG (7 tasks, 2-hour cycle)
 
 ```
 TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA guard, LIMIT 500)
@@ -66,7 +68,8 @@ TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA guard, LIM
 ├── TSK_REFRESH_DEAL_HEALTH (grandchild, AI call, changed-only, stage filter: 'Initial Conversation' + 'In-Contact' only)
 ├── TSK_REFRESH_CUSTOMER_360 (grandchild, pure SQL)
 ├── TSK_REFRESH_EMAIL_ANALYTICS (grandchild, pure SQL, once-daily timestamp check)
-└── TSK_REFRESH_CALL_ACTIVITY (child, pure SQL, once-daily timestamp check)
+├── TSK_REFRESH_CALL_ACTIVITY (child, pure SQL, once-daily timestamp check)
+└── TSK_REFRESH_DIM_ACTIVITY_SUMMARY (child, pure SQL, once-daily timestamp check, full rebuild from dimensional model)
 ```
 
 **Critical**: When modifying any task in the DAG, the root task (`TSK_ENRICH_NEW_EMAILS`) must be suspended first, then the child task modified, then the root task resumed.
@@ -81,7 +84,7 @@ TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA guard, LIM
 
 ### Semantic View (`SV_CRM_SALES_INTELLIGENCE`)
 
-10 logical tables: `OPPORTUNITIES`, `DEAL_HEALTH`, `ACTIVITY_METRICS`, `USERS`, `TICKET_TEAM_DEPT`, `CUSTOMER_360`, `EMAIL_ANALYTICS`, `CALL_ACTIVITY`, `GAME_ATTENDANCE`, `GAME_ATTENDANCE_DETAIL`
+11 logical tables: `OPPORTUNITIES`, `DEAL_HEALTH`, `ACTIVITY_METRICS`, `USERS`, `TICKET_TEAM_DEPT`, `CUSTOMER_360`, `EMAIL_ANALYTICS`, `CALL_ACTIVITY`, `GAME_ATTENDANCE`, `GAME_ATTENDANCE_DETAIL`, `ACTIVITY_DETAIL`
 
 Named filter: `CURRENT_RECORDS_ONLY` (`SYSTEM_CURRENT_FLAG = 'Y'`) on OPPORTUNITIES.
 
@@ -141,6 +144,7 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 - Cortex Search Services require VARCHAR columns — extract JSON fields to VARCHAR before indexing
 - `WHEN` clause on child tasks only supports `SYSTEM$STREAM_HAS_DATA` — use `BEGIN/IF` blocks for more complex daily-only logic
 - Department codes in semantic view queries: `TICKET_TSR`, `TICKET_SALES`, `TICKET_SERVICE`, `TICKET_MEMBER_AE`, `CORPORATE_PARTNERSHIP_SALES`, `TICKET_LEADERSHIP`, `TICKET_INTERN`, `CALL_CENTER`
+- **Task urgency prioritization**: The organization prioritizes task dates over close dates for urgency. The hierarchy is: (1) Overdue tasks = highest urgency, (2) Tasks due in next 7 days = secondary, (3) Close date = tertiary. `TASK_URGENCY` column values: `Overdue`, `Due Today`, `Next 7 Days`, `Later`, `No Open Tasks`. Task urgency is computed from `V_SALESFORCE_TASKS_CURRENT` (open tasks only, `IS_CLOSED = FALSE`). The health score formula penalizes overdue tasks (-15 pts, or -25 if 3+ overdue) and penalizes low-engagement deals with no open tasks (-10 pts).
 - **Snowflake does not support correlated subqueries inside CTE WHERE clauses** — use LEFT JOIN instead. Example: the `TSK_REFRESH_DEAL_HEALTH` changed-only filter originally used `(SELECT tgt2.SCORING_TIMESTAMP FROM ... WHERE tgt2.OPPORTUNITY_ID = oam.OPPORTUNITY_ID)` which silently returned 0 rows. Fixed March 10, 2026 by replacing with `LEFT JOIN T_DEAL_HEALTH_SCORE dh ON oam.OPPORTUNITY_ID = dh.OPPORTUNITY_ID`.
 
 ## Monitoring & Health Check
@@ -161,6 +165,7 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 | `T_CUSTOMER_360` | 26 hours | Runs after activity metrics |
 | `T_EMAIL_ANALYTICS` | 48 hours | Once-daily rebuild |
 | `T_CALL_ACTIVITY` | 48 hours | Once-daily incremental |
+| `T_DIM_ACTIVITY_SUMMARY` | 48 hours | Once-daily full rebuild from dimensional model |
 
 ### Emergency Recovery Playbook
 

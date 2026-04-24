@@ -181,6 +181,28 @@ USING (
         GROUP BY da.opportunity_id
     ),
     -- -------------------------------------------------------
+    -- Task urgency: next task date and overdue count per opp
+    -- Source: V_SALESFORCE_TASKS_CURRENT (deduped SCD2)
+    -- -------------------------------------------------------
+    task_urgency AS (
+        SELECT
+            t.WHAT_ID AS opportunity_id,
+            COUNT(CASE WHEN t.ACTIVITY_DATE < CURRENT_DATE() THEN 1 END) AS overdue_task_count,
+            MIN(t.ACTIVITY_DATE) AS next_task_date,
+            MIN_BY(t.SUBJECT, t.ACTIVITY_DATE) AS next_task_subject,
+            CASE
+                WHEN MIN(t.ACTIVITY_DATE) < CURRENT_DATE() THEN 'Overdue'
+                WHEN MIN(t.ACTIVITY_DATE) = CURRENT_DATE() THEN 'Due Today'
+                WHEN MIN(t.ACTIVITY_DATE) <= DATEADD('day', 7, CURRENT_DATE()) THEN 'Next 7 Days'
+                ELSE 'Later'
+            END AS task_urgency
+        FROM TBRDP_DW_PROD.IM_RPT.V_SALESFORCE_TASKS_CURRENT t
+        WHERE t.WHAT_ID IS NOT NULL
+          AND t.ACTIVITY_DATE IS NOT NULL
+          AND t.IS_CLOSED = FALSE
+        GROUP BY t.WHAT_ID
+    ),
+    -- -------------------------------------------------------
     -- Email sentiment from T_EMAIL_ENRICHED (via dim model)
     -- Join: v_dim_email_message.ID_BK → T_EMAIL_ENRICHED.EMAIL_ID
     -- -------------------------------------------------------
@@ -232,6 +254,11 @@ USING (
         COALESCE(aa.pending_tasks, 0) AS pending_tasks,
         aa.last_completed_task_date,
         COALESCE(aa.days_since_last_completed_task, 9999) AS days_since_last_completed_task,
+        -- Task urgency columns
+        COALESCE(tu.overdue_task_count, 0) AS overdue_task_count,
+        tu.next_task_date,
+        tu.next_task_subject,
+        COALESCE(tu.task_urgency, 'No Open Tasks') AS task_urgency,
         CASE
             WHEN COALESCE(aa.days_since_last_email, 9999) <= 7
              AND COALESCE(aa.days_since_last_call, 9999) <= 14
@@ -256,6 +283,7 @@ USING (
     FROM TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY o
     INNER JOIN activity_agg aa ON o.ID = aa.opportunity_id
     LEFT JOIN email_sentiment es ON o.ID = es.opportunity_id
+    LEFT JOIN task_urgency tu ON o.ID = tu.opportunity_id
     WHERE o.SYSTEM_CURRENT_FLAG = 'Y'
 ) src
 ON tgt.OPPORTUNITY_ID = src.opportunity_id
@@ -292,6 +320,10 @@ WHEN MATCHED THEN UPDATE SET
     tgt.ENGAGEMENT_LEVEL = src.engagement_level,
     tgt.IS_GHOSTED = src.is_ghosted,
     tgt.HAS_SENTIMENT_RISK = src.has_sentiment_risk,
+    tgt.OVERDUE_TASK_COUNT = src.overdue_task_count,
+    tgt.NEXT_TASK_DATE = src.next_task_date,
+    tgt.NEXT_TASK_SUBJECT = src.next_task_subject,
+    tgt.TASK_URGENCY = src.task_urgency,
     tgt.METRICS_TIMESTAMP = src.metrics_timestamp
 WHEN NOT MATCHED THEN INSERT (
     OPPORTUNITY_ID, OPPORTUNITY_NAME, ACCOUNT_ID, OWNER_ID, STAGE_NAME,
@@ -303,7 +335,8 @@ WHEN NOT MATCHED THEN INSERT (
     LAST_CALL_DATE, DAYS_SINCE_LAST_CALL, COMPLETED_CALLS, MISSED_CALLS,
     TOTAL_TASKS, COMPLETED_TASKS, PENDING_TASKS, LAST_COMPLETED_TASK_DATE,
     DAYS_SINCE_LAST_COMPLETED_TASK, ENGAGEMENT_LEVEL, IS_GHOSTED,
-    HAS_SENTIMENT_RISK, METRICS_TIMESTAMP
+    HAS_SENTIMENT_RISK, OVERDUE_TASK_COUNT, NEXT_TASK_DATE, NEXT_TASK_SUBJECT,
+    TASK_URGENCY, METRICS_TIMESTAMP
 ) VALUES (
     src.opportunity_id, src.opportunity_name, src.account_id, src.owner_id, src.stage_name,
     src.amount, src.est_revenue_c, src.probability, src.close_date, src.created_date,
@@ -314,7 +347,8 @@ WHEN NOT MATCHED THEN INSERT (
     src.last_call_date, src.days_since_last_call, src.completed_calls, src.missed_calls,
     src.total_tasks, src.completed_tasks, src.pending_tasks, src.last_completed_task_date,
     src.days_since_last_completed_task, src.engagement_level, src.is_ghosted,
-    src.has_sentiment_risk, src.metrics_timestamp
+    src.has_sentiment_risk, src.overdue_task_count, src.next_task_date, src.next_task_subject,
+    src.task_urgency, src.metrics_timestamp
 );
 
 -- =====================================================
@@ -352,6 +386,9 @@ USING (
             oam.ENGAGEMENT_LEVEL,
             oam.IS_GHOSTED,
             oam.HAS_SENTIMENT_RISK,
+            oam.OVERDUE_TASK_COUNT,
+            oam.NEXT_TASK_DATE,
+            oam.TASK_URGENCY,
             oam.METRICS_TIMESTAMP
         FROM TBRDP_DW_PROD.IM_RPT.T_OPPORTUNITY_ACTIVITY_METRICS oam
         JOIN TBRDP_DW_PROD.IM_RPT.V_ODS_SALESFORCE_OPPORTUNITY o
@@ -380,6 +417,9 @@ USING (
         ENGAGEMENT_LEVEL,
         IS_GHOSTED,
         HAS_SENTIMENT_RISK,
+        OVERDUE_TASK_COUNT,
+        NEXT_TASK_DATE,
+        TASK_URGENCY,
 
         GREATEST(0, LEAST(100,
             50
@@ -393,6 +433,13 @@ USING (
             + CASE WHEN IS_GHOSTED = TRUE THEN -30 ELSE 0 END
             + CASE WHEN HAS_SENTIMENT_RISK = TRUE THEN -20 ELSE 0 END
             + CASE WHEN days_until_close < 30 AND COALESCE(TOTAL_EMAILS, 0) > 5 THEN 10 ELSE 0 END
+            -- Task urgency adjustments (primary urgency signal)
+            + CASE WHEN TASK_URGENCY = 'Overdue' AND OVERDUE_TASK_COUNT >= 3 THEN -25
+                   WHEN TASK_URGENCY = 'Overdue' THEN -15
+                   WHEN TASK_URGENCY = 'Due Today' THEN -5
+                   WHEN TASK_URGENCY = 'Next 7 Days' THEN 0
+                   WHEN TASK_URGENCY = 'No Open Tasks' AND ENGAGEMENT_LEVEL = 'Low Engagement' THEN -10
+                   ELSE 0 END
         )) AS HEALTH_SCORE,
 
         CASE 
@@ -408,6 +455,12 @@ USING (
                 + CASE WHEN IS_GHOSTED = TRUE THEN -30 ELSE 0 END
                 + CASE WHEN HAS_SENTIMENT_RISK = TRUE THEN -20 ELSE 0 END
                 + CASE WHEN days_until_close < 30 AND COALESCE(TOTAL_EMAILS, 0) > 5 THEN 10 ELSE 0 END
+                + CASE WHEN TASK_URGENCY = 'Overdue' AND OVERDUE_TASK_COUNT >= 3 THEN -25
+                       WHEN TASK_URGENCY = 'Overdue' THEN -15
+                       WHEN TASK_URGENCY = 'Due Today' THEN -5
+                       WHEN TASK_URGENCY = 'Next 7 Days' THEN 0
+                       WHEN TASK_URGENCY = 'No Open Tasks' AND ENGAGEMENT_LEVEL = 'Low Engagement' THEN -10
+                       ELSE 0 END
             )) >= 70 THEN 'Healthy'
             WHEN GREATEST(0, LEAST(100,
                 50
@@ -421,6 +474,12 @@ USING (
                 + CASE WHEN IS_GHOSTED = TRUE THEN -30 ELSE 0 END
                 + CASE WHEN HAS_SENTIMENT_RISK = TRUE THEN -20 ELSE 0 END
                 + CASE WHEN days_until_close < 30 AND COALESCE(TOTAL_EMAILS, 0) > 5 THEN 10 ELSE 0 END
+                + CASE WHEN TASK_URGENCY = 'Overdue' AND OVERDUE_TASK_COUNT >= 3 THEN -25
+                       WHEN TASK_URGENCY = 'Overdue' THEN -15
+                       WHEN TASK_URGENCY = 'Due Today' THEN -5
+                       WHEN TASK_URGENCY = 'Next 7 Days' THEN 0
+                       WHEN TASK_URGENCY = 'No Open Tasks' AND ENGAGEMENT_LEVEL = 'Low Engagement' THEN -10
+                       ELSE 0 END
             )) >= 40 THEN 'At Risk'
             ELSE 'Critical'
         END AS HEALTH_CATEGORY,
@@ -437,8 +496,12 @@ USING (
                 'Last email contact: ', COALESCE(CAST(DAYS_SINCE_LAST_EMAIL AS VARCHAR), 'Unknown'), ' days ago. ',
                 'Email sentiment: ', COALESCE(CAST(ROUND(AVG_EMAIL_SENTIMENT, 2) AS VARCHAR), '0'), '. ',
                 'Engagement: ', COALESCE(ENGAGEMENT_LEVEL, 'Unknown'), '. ',
+                'Task urgency: ', COALESCE(TASK_URGENCY, 'No Open Tasks'), '. ',
+                'Overdue tasks: ', CAST(COALESCE(OVERDUE_TASK_COUNT, 0) AS VARCHAR), '. ',
+                CASE WHEN NEXT_TASK_DATE IS NOT NULL THEN CONCAT('Next task due: ', CAST(NEXT_TASK_DATE AS VARCHAR), '. ') ELSE '' END,
                 CASE WHEN IS_GHOSTED = TRUE THEN 'WARNING: Customer is not responding. ' ELSE '' END,
-                CASE WHEN HAS_SENTIMENT_RISK = TRUE THEN 'WARNING: Negative sentiment detected. ' ELSE '' END
+                CASE WHEN HAS_SENTIMENT_RISK = TRUE THEN 'WARNING: Negative sentiment detected. ' ELSE '' END,
+                CASE WHEN TASK_URGENCY = 'Overdue' THEN 'PRIORITY: Overdue tasks require immediate attention. ' ELSE '' END
             )
         ) AS AI_DEAL_ASSESSMENT,
 
@@ -462,6 +525,9 @@ WHEN MATCHED THEN UPDATE SET
     tgt.ENGAGEMENT_LEVEL = src.ENGAGEMENT_LEVEL,
     tgt.IS_GHOSTED = src.IS_GHOSTED,
     tgt.HAS_SENTIMENT_RISK = src.HAS_SENTIMENT_RISK,
+    tgt.OVERDUE_TASK_COUNT = src.OVERDUE_TASK_COUNT,
+    tgt.NEXT_TASK_DATE = src.NEXT_TASK_DATE,
+    tgt.TASK_URGENCY = src.TASK_URGENCY,
     tgt.HEALTH_SCORE = src.HEALTH_SCORE,
     tgt.HEALTH_CATEGORY = src.HEALTH_CATEGORY,
     tgt.AI_DEAL_ASSESSMENT = src.AI_DEAL_ASSESSMENT,
@@ -471,6 +537,7 @@ WHEN NOT MATCHED THEN INSERT (
     CLOSE_DATE, DAYS_UNTIL_CLOSE, TOTAL_EMAILS, TOTAL_CALLS,
     DAYS_SINCE_LAST_EMAIL, DAYS_SINCE_LAST_CALL, AVG_EMAIL_SENTIMENT,
     ENGAGEMENT_LEVEL, IS_GHOSTED, HAS_SENTIMENT_RISK,
+    OVERDUE_TASK_COUNT, NEXT_TASK_DATE, TASK_URGENCY,
     HEALTH_SCORE, HEALTH_CATEGORY, AI_DEAL_ASSESSMENT,
     SCORING_TIMESTAMP
 ) VALUES (
@@ -478,6 +545,7 @@ WHEN NOT MATCHED THEN INSERT (
     src.CLOSE_DATE, src.days_until_close, src.TOTAL_EMAILS, src.TOTAL_CALLS,
     src.DAYS_SINCE_LAST_EMAIL, src.DAYS_SINCE_LAST_CALL, src.AVG_EMAIL_SENTIMENT,
     src.ENGAGEMENT_LEVEL, src.IS_GHOSTED, src.HAS_SENTIMENT_RISK,
+    src.OVERDUE_TASK_COUNT, src.NEXT_TASK_DATE, src.TASK_URGENCY,
     src.HEALTH_SCORE, src.HEALTH_CATEGORY, src.AI_DEAL_ASSESSMENT,
     src.SCORING_TIMESTAMP
 );
