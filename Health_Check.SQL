@@ -60,13 +60,16 @@ DECLARE
     v_call_activity_ts TIMESTAMP;
     v_deal_health_ts TIMESTAMP;
     v_customer_360_ts TIMESTAMP;
+    v_dim_activity_ts TIMESTAMP;
     v_threshold_2h TIMESTAMP;
+    v_threshold_3h TIMESTAMP;
     v_threshold_48h TIMESTAMP;
     v_total_scored NUMBER;
     v_critical_count NUMBER;
     v_critical_pct NUMBER;
 BEGIN
     v_threshold_2h := DATEADD('HOUR', -26, CURRENT_TIMESTAMP());
+    v_threshold_3h := DATEADD('HOUR', -3, CURRENT_TIMESTAMP());
     v_threshold_48h := DATEADD('HOUR', -48, CURRENT_TIMESTAMP());
 
     -- Get latest timestamps from each table
@@ -87,6 +90,9 @@ BEGIN
 
     SELECT COALESCE(MAX(LOADED_AT), '1900-01-01'::TIMESTAMP)
         INTO :v_call_activity_ts FROM TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY;
+
+    SELECT COALESCE(MAX(LOADED_AT), '1900-01-01'::TIMESTAMP)
+        INTO :v_dim_activity_ts FROM TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY;
 
     -- Check each table against thresholds
     IF (:v_email_enriched_ts < :v_threshold_2h) THEN
@@ -111,6 +117,12 @@ BEGIN
 
     IF (:v_call_activity_ts < :v_threshold_48h) THEN
         v_issues := :v_issues || '- T_CALL_ACTIVITY is stale (last: ' || :v_call_activity_ts::VARCHAR || ').\n';
+    END IF;
+
+    -- 30-min standalone refresh (TSK_REFRESH_DIM_ACTIVITY_SUMMARY); guarded by
+    -- SOURCE_WATERMARK so LOADED_AT only advances when V_FACT_ACTIVITIES loads new data.
+    IF (:v_dim_activity_ts < :v_threshold_3h) THEN
+        v_issues := :v_issues || '- T_DIM_ACTIVITY_SUMMARY is stale (last: ' || :v_dim_activity_ts::VARCHAR || '). 30-min refresh task may be suspended or source not loading.\n';
     END IF;
 
     -- Deal health distribution check — alert if Critical > 80%
@@ -164,6 +176,7 @@ UNION ALL SELECT 'T_DEAL_HEALTH', MAX(SCORING_TIMESTAMP) FROM TBRDP_DW_PROD.IM_R
 UNION ALL SELECT 'T_CUSTOMER_360', MAX(LAST_REFRESHED_AT) FROM TBRDP_DW_PROD.IM_RPT.T_CUSTOMER_360
 UNION ALL SELECT 'T_EMAIL_ANALYTICS', MAX(ANALYTICS_GENERATED_AT) FROM TBRDP_DW_PROD.IM_RPT.T_EMAIL_ANALYTICS
 UNION ALL SELECT 'T_CALL_ACTIVITY', MAX(LOADED_AT) FROM TBRDP_DW_PROD.IM_RPT.T_CALL_ACTIVITY
+UNION ALL SELECT 'T_DIM_ACTIVITY_SUMMARY', MAX(LOADED_AT) FROM TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY
 ORDER BY 1;
 
 -- Health check log
