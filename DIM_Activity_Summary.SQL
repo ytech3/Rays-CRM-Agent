@@ -42,11 +42,10 @@ CREATE TABLE IF NOT EXISTS TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY (
 -- TASK: Refresh T_DIM_ACTIVITY_SUMMARY
 -- Pure SQL — no AI functions, ~2-3s per run, negligible cost.
 -- STANDALONE (NOT part of the TSK_ENRICH_NEW_EMAILS DAG).
--- Rebuilds UNCONDITIONALLY every 30 minutes so LOADED_AT always
--- reflects a recent run. (Previously gated by a _FIVETRAN_SYNCED
--- watermark, which made the freshness footer read "stale" overnight
--- and occasionally lagged new rows. The rebuild is cheap enough that
--- an unconditional refresh is simpler and more predictable.)
+-- Rebuilds UNCONDITIONALLY every 120 minutes (aligns with main DAG cycle
+-- and Fivetran sync frequency — no value in rebuilding faster than source
+-- data changes). Reduced from 30 min to cut warehouse runs from 48 to
+-- 12/day with zero impact on data freshness.
 -- Sources from dimensional model for exact Tableau match.
 --
 -- DEPLOY NOTE: CREATE OR REPLACE TASK leaves the task SUSPENDED, and
@@ -55,7 +54,7 @@ CREATE TABLE IF NOT EXISTS TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY (
 -- =====================================================
 CREATE OR REPLACE TASK TBRDP_DW_PROD.IM_RPT.TSK_REFRESH_DIM_ACTIVITY_SUMMARY
     WAREHOUSE = TBRDP_DW_CORTEX_XS_WH
-    SCHEDULE = '30 MINUTE'
+    SCHEDULE = '120 MINUTE'
 AS
     CREATE OR REPLACE TABLE TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY AS
     SELECT
