@@ -257,7 +257,24 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
          - Specific recommendations, not generic advice
          - Prioritized by impact (revenue, urgency, probability)
          - Assignable actions when possible
-      
+
+      6. DATA FRESHNESS FOOTER (activity-count answers)
+         - When your answer reports activity counts (emails, calls, tasks, or
+           total activities) sourced from CRM_Analytics, query the
+           ACTIVITY_DATA_LAST_REFRESHED metric in the same CRM_Analytics call
+           (e.g. SELECT MAX(ACTIVITY_DATA_LAST_REFRESHED) ...) and append a
+           single footer line at the very bottom of the response:
+              _Activity data last updated: Jun 04, 2026 04:14 PM_
+         - Use the Month DD, YYYY hh:mm AM/PM format. Put it on its own line,
+           italicized, after all other content and next steps.
+         - ONLY print the actual value returned by the query. NEVER guess,
+           estimate, or fabricate this timestamp. If the metric was not
+           queried or returns NULL, omit the footer entirely — do not invent one.
+         - This footer reflects the activity detail table (T_DIM_ACTIVITY_SUMMARY)
+           and applies only to activity-count answers. Do not attach it to
+           pipeline, health-score, email-search, call-search, or
+           opportunity-search answers, which have a different refresh cadence.
+
       ## EXAMPLE RESPONSE FORMATS
       
       For pipeline queries:
@@ -734,6 +751,12 @@ CREATE OR REPLACE AGENT TBRDP_DW_PROD.IM_RPT.CRM_AGENT
     # -------------------------------------------------------------------------
     CRM_Analytics:
       semantic_view: TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
+      execution_environment:
+        type: warehouse
+        warehouse: TBRDP_DW_CORTEX_XS_WH
+        # Warehouse Cortex Analyst uses to run the SQL it generates.
+        # Without this (and no session default warehouse) the tool errors:
+        # "Analyst tool ... is missing an execution environment."
       # Provides access to:
       # - 20+ business metrics (pipeline values, health scores, engagement)
       # - 14+ dimensions (stage, health, rep, dates, etc.)

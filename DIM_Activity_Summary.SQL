@@ -34,53 +34,59 @@ CREATE TABLE IF NOT EXISTS TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY (
     CALL_DURATION_SECONDS NUMBER(38,0),  -- From V_FACT_ACTIVITIES
     EMAIL_INCOMING BOOLEAN,              -- From V_DIM_EMAIL_MESSAGE
     EMAIL_MESSAGE_DATE TIMESTAMP_NTZ,    -- From V_DIM_EMAIL_MESSAGE
-    LOADED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+    LOADED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    SOURCE_WATERMARK TIMESTAMP_TZ        -- MAX(_FIVETRAN_SYNCED) at build time; informational "source as-of" (no longer used to gate rebuilds)
 );
 
 -- =====================================================
 -- TASK: Refresh T_DIM_ACTIVITY_SUMMARY
--- Pure SQL — no AI functions, negligible cost
--- Runs as child of TSK_ENRICH_NEW_EMAILS
--- Full rebuild daily (once-daily timestamp check)
--- Sources from dimensional model for exact Tableau match
+-- Pure SQL — no AI functions, ~2-3s per run, negligible cost.
+-- STANDALONE (NOT part of the TSK_ENRICH_NEW_EMAILS DAG).
+-- Rebuilds UNCONDITIONALLY every 30 minutes so LOADED_AT always
+-- reflects a recent run. (Previously gated by a _FIVETRAN_SYNCED
+-- watermark, which made the freshness footer read "stale" overnight
+-- and occasionally lagged new rows. The rebuild is cheap enough that
+-- an unconditional refresh is simpler and more predictable.)
+-- Sources from dimensional model for exact Tableau match.
+--
+-- DEPLOY NOTE: CREATE OR REPLACE TASK leaves the task SUSPENDED, and
+-- IM_RPT is a managed-access schema — run this as the task owner role.
+-- You MUST resume it afterward (see ALTER TASK ... RESUME below).
 -- =====================================================
 CREATE OR REPLACE TASK TBRDP_DW_PROD.IM_RPT.TSK_REFRESH_DIM_ACTIVITY_SUMMARY
     WAREHOUSE = TBRDP_DW_CORTEX_XS_WH
-    AFTER TBRDP_DW_PROD.IM_RPT.TSK_ENRICH_NEW_EMAILS
+    SCHEDULE = '30 MINUTE'
 AS
-BEGIN
-    -- Only rebuild if we haven't already today
-    IF ((SELECT COALESCE(MAX(LOADED_AT), '1900-01-01'::TIMESTAMP)
-         FROM TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY) < DATE_TRUNC('DAY', CURRENT_TIMESTAMP())) THEN
+    CREATE OR REPLACE TABLE TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY AS
+    SELECT
+        fact.V_FACT_ACTIVITIES_KEY AS ACTIVITY_KEY,
+        dad.DIM_DATE_BK AS ACTIVITY_DATE,
+        actt.ACTIVITY_SUBTYPE,
+        actt.ACTIVITY_TYPE,
+        acts.ACTIVITY_STATUS,
+        aown.NAME AS REP_NAME,
+        aown.CRM_USER_ID_BK AS REP_USER_ID,
+        dopps.OPPORTUNITY_ID_BK AS OPPORTUNITY_ID,
+        fact.CALL_DURATION_IN_SECONDS AS CALL_DURATION_SECONDS,
+        dem.INCOMING AS EMAIL_INCOMING,
+        dem.MESSAGE_DATE AS EMAIL_MESSAGE_DATE,
+        CURRENT_TIMESTAMP() AS LOADED_AT,
+        (SELECT MAX(_FIVETRAN_SYNCED)
+           FROM TBRDP_DW_PROD.IM_RPT.V_FACT_ACTIVITIES) AS SOURCE_WATERMARK
+    FROM TBRDP_DW_PROD.IM_RPT.V_FACT_ACTIVITIES fact
+    INNER JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_ACTIVITY_TYPE actt
+        ON fact.V_DIM_ACTIVITY_TYPE_KEY = actt.V_DIM_ACTIVITY_TYPE_KEY
+    LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_ACTIVITY_STATUS acts
+        ON fact.V_DIM_ACTIVITY_STATUS_KEY = acts.V_DIM_ACTIVITY_STATUS_KEY
+    LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_CRM_USER__ACTIVITY_OWNER aown
+        ON fact.V_DIM_CRM_USER__ACTIVITY_OWNER_KEY = aown.V_DIM_CRM_USER__ACTIVITY_OWNER_KEY
+        AND aown.SYSTEM_CURRENT_FLAG = 'Y'
+    LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_DATE__ACTIVITY_DATE dad
+        ON fact.V_DIM_DATE__ACTIVITY_DATE_KEY = dad.V_DIM_DATE__ACTIVITY_DATE_KEY
+    LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_OPPORTUNITY dopps
+        ON fact.V_DIM_OPPORTUNITY_KEY = dopps.V_DIM_OPPORTUNITY_KEY
+    LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_EMAIL_MESSAGE dem
+        ON fact.V_DIM_EMAIL_MESSAGE_KEY = dem.V_DIM_EMAIL_MESSAGE_KEY;
 
-        CREATE OR REPLACE TABLE TBRDP_DW_PROD.IM_RPT.T_DIM_ACTIVITY_SUMMARY AS
-        SELECT
-            fact.V_FACT_ACTIVITIES_KEY AS ACTIVITY_KEY,
-            dad.DIM_DATE_BK AS ACTIVITY_DATE,
-            actt.ACTIVITY_SUBTYPE,
-            actt.ACTIVITY_TYPE,
-            acts.ACTIVITY_STATUS,
-            aown.NAME AS REP_NAME,
-            aown.CRM_USER_ID_BK AS REP_USER_ID,
-            dopps.OPPORTUNITY_ID_BK AS OPPORTUNITY_ID,
-            fact.CALL_DURATION_IN_SECONDS AS CALL_DURATION_SECONDS,
-            dem.INCOMING AS EMAIL_INCOMING,
-            dem.MESSAGE_DATE AS EMAIL_MESSAGE_DATE,
-            CURRENT_TIMESTAMP() AS LOADED_AT
-        FROM TBRDP_DW_PROD.IM_RPT.V_FACT_ACTIVITIES fact
-        INNER JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_ACTIVITY_TYPE actt
-            ON fact.V_DIM_ACTIVITY_TYPE_KEY = actt.V_DIM_ACTIVITY_TYPE_KEY
-        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_ACTIVITY_STATUS acts
-            ON fact.V_DIM_ACTIVITY_STATUS_KEY = acts.V_DIM_ACTIVITY_STATUS_KEY
-        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_CRM_USER__ACTIVITY_OWNER aown
-            ON fact.V_DIM_CRM_USER__ACTIVITY_OWNER_KEY = aown.V_DIM_CRM_USER__ACTIVITY_OWNER_KEY
-            AND aown.SYSTEM_CURRENT_FLAG = 'Y'
-        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_DATE__ACTIVITY_DATE dad
-            ON fact.V_DIM_DATE__ACTIVITY_DATE_KEY = dad.V_DIM_DATE__ACTIVITY_DATE_KEY
-        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_OPPORTUNITY dopps
-            ON fact.V_DIM_OPPORTUNITY_KEY = dopps.V_DIM_OPPORTUNITY_KEY
-        LEFT JOIN TBRDP_DW_PROD.IM_RPT.V_DIM_EMAIL_MESSAGE dem
-            ON fact.V_DIM_EMAIL_MESSAGE_KEY = dem.V_DIM_EMAIL_MESSAGE_KEY;
-
-    END IF;
-END;
+-- REQUIRED after the CREATE OR REPLACE above (task is created suspended):
+ALTER TASK TBRDP_DW_PROD.IM_RPT.TSK_REFRESH_DIM_ACTIVITY_SUMMARY RESUME;

@@ -9,6 +9,10 @@
 --      and CA-extension registration.
 --   2) ADDS the ACTIVITY_DATA_LAST_REFRESHED freshness metric on
 --      ACTIVITY_DETAIL (in metrics() and CA extension).
+--   3) FIXES the Sunday–Saturday week boundaries in ai_sql_generation
+--      (rules 2, 31, 44): replaced DAYOFWEEK() — which depends on the
+--      WEEK_START session parameter and was producing Monday-based weeks —
+--      with the parameter-independent MOD(DAYOFWEEKISO(CURRENT_DATE()), 7).
 -- Run the whole file. Filter + verified queries survive — no GUI re-add.
 -- =====================================================================
 
@@ -307,13 +311,14 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
        - For this year: field >= DATE_TRUNC(''YEAR'', CURRENT_DATE()) AND field < DATEADD(''YEAR'', 1, DATE_TRUNC(''YEAR'', CURRENT_DATE()))
        - For last month: field >= DATEADD(''MONTH'', -1, DATE_TRUNC(''MONTH'', CURRENT_DATE())) AND field < DATE_TRUNC(''MONTH'', CURRENT_DATE())
        - For a specific month: field >= ''2026-02-01''::TIMESTAMP_NTZ AND field < ''2026-03-01''::TIMESTAMP_NTZ
-       - WEEK CONVENTION (Sunday–Saturday): Do NOT use DATE_TRUNC(''week'', ...) for weekly filtering — Snowflake defaults to Monday. Instead, always calculate Sunday-based week boundaries using DAYOFWEEK() which returns 0=Sunday, 1=Monday, ..., 6=Saturday:
-         * Start of this week (Sunday): DATEADD(''day'', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
-         * End of this week (Saturday night): DATEADD(''day'', 7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
-         * Start of last week (previous Sunday): DATEADD(''day'', -7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
-         * For "this week": field >= DATEADD(''day'', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE()) AND field < DATEADD(''day'', 7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
-         * For "last week": field >= DATEADD(''day'', -7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE()) AND field < DATEADD(''day'', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
-         * For TIMESTAMP fields, cast the boundary to TIMESTAMP: field >= DATEADD(''day'', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())::TIMESTAMP_NTZ
+       - WEEK CONVENTION (Sunday–Saturday): NEVER use DATE_TRUNC(''week'', ...) for weekly filtering — it returns Monday and is affected by the WEEK_START session parameter. NEVER use DAYOFWEEK() either — its numbering also depends on WEEK_START and can silently shift the week to Monday. ALWAYS compute Sunday-based boundaries with a session-parameter-INDEPENDENT expression built on DAYOFWEEKISO() (which is ALWAYS Monday=1 ... Sunday=7). The number of days since the most recent Sunday is MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), giving Sun=0, Mon=1, ..., Sat=6:
+         * Start of this week (Sunday): DATEADD(''day'', -MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE())
+         * End of this week, EXCLUSIVE upper bound (next Sunday): DATEADD(''day'', 7 - MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE())
+         * Start of last week (previous Sunday): DATEADD(''day'', -7 - MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE())
+         * For "this week": field >= DATEADD(''day'', -MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE()) AND field < DATEADD(''day'', 7 - MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE())
+         * For "last week": field >= DATEADD(''day'', -7 - MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE()) AND field < DATEADD(''day'', -MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE())
+         * For TIMESTAMP fields, cast the boundary to TIMESTAMP: field >= DATEADD(''day'', -MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE())::TIMESTAMP_NTZ
+         * WORKED EXAMPLE: if today is Friday 2026-06-05, then DAYOFWEEKISO=5 and MOD(5,7)=5, so "this week" = 2026-05-31 (Sunday) through 2026-06-06 (Saturday), expressed as field >= ''2026-05-31'' AND field < ''2026-06-07''.
          * This applies to ALL tables and ALL date/timestamp fields when filtering by week.
     3. Round currency values to 2 decimal places
     4. For percentage metrics, multiply by 1 to ensure numeric display
@@ -355,8 +360,8 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
         GROUP BY AGENT_NAME, CALL_DIRECTION
     30. CALL_SOURCE distinguishes Contact Center (SESSION_HISTORY) from Zoom Phone (ZOOM_CALL_LOG). Most reps have calls in both sources — do not filter by source unless the user specifically asks.
     31. TASK QUERIES — salesforce_tasks.ACTIVITY_DATE is a DATE field (not TIMESTAMP). Use direct date comparisons only — do NOT cast to TIMESTAMP. Use Sunday–Saturday week boundaries (see rule 2 WEEK CONVENTION):
-        - For "last week" (previous calendar week, Sun–Sat): ACTIVITY_DATE >= DATEADD(''day'', -7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD(''day'', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
-        - For "this week" (current Sun–Sat): ACTIVITY_DATE >= DATEADD(''day'', -DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD(''day'', 7 - DAYOFWEEK(CURRENT_DATE()), CURRENT_DATE())
+        - For "last week" (previous calendar week, Sun–Sat): ACTIVITY_DATE >= DATEADD(''day'', -7 - MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD(''day'', -MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE())
+        - For "this week" (current Sun–Sat): ACTIVITY_DATE >= DATEADD(''day'', -MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD(''day'', 7 - MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE())
         - For "today": ACTIVITY_DATE = CURRENT_DATE()
         - For "overdue" (past due and not yet closed): ACTIVITY_DATE < CURRENT_DATE() AND salesforce_tasks.IS_CLOSED = FALSE
         - For "next 7 days": ACTIVITY_DATE > CURRENT_DATE() AND ACTIVITY_DATE <= DATEADD(''day'', 7, CURRENT_DATE())
@@ -372,7 +377,7 @@ create or replace semantic view TBRDP_DW_PROD.IM_RPT.SV_CRM_SALES_INTELLIGENCE
     41. ACTIVITY COUNTING (CRITICAL) — For rep-level activity counts by date range (e.g., "how many calls/emails did rep X make this week", "activity breakdown for Brandon Harnick"), ALWAYS use the ACTIVITY_DETAIL table — NOT email_analytics or call_activity. The ACTIVITY_DETAIL table sources from the same dimensional model as Tableau and produces exact-match counts. Use ACTIVITY_TYPE for direction: ''Call Inbound'', ''Call Outbound''. Use ACTIVITY_SUBTYPE for category: ''Email'', ''Call'', ''Task''. Use COUNT(DISTINCT ACTIVITY_KEY) to match Tableau COUNTD. Filter by REP_NAME ILIKE ''%rep name%'' and ACTIVITY_DATE range.
     42. Use EMAIL_ANALYTICS only for email content analysis, response times, sentiment, send-time optimization, and individual email details. Use CALL_ACTIVITY only for call notes, voicemail content, and detailed call session data. For COUNTING activities by rep and date, always use ACTIVITY_DETAIL.
     43. When the user says "emails" in a counting context (how many emails did X send, email count by rep this week), use ACTIVITY_DETAIL with ACTIVITY_SUBTYPE = ''Email''. When they want email content, sentiment, or response times, use EMAIL_ANALYTICS. When they say "calls" in a counting context (how many calls, call volume by rep), use ACTIVITY_DETAIL with ACTIVITY_SUBTYPE = ''Call''. When they want call notes or voicemail content, use CALL_ACTIVITY.
-    44. ACTIVITY_DETAIL date filtering — ACTIVITY_DATE is a DATE field. Use direct date comparisons: ACTIVITY_DATE >= ''2026-04-12'' AND ACTIVITY_DATE <= ''2026-04-18''. Do NOT cast to TIMESTAMP.
+    44. ACTIVITY_DETAIL date filtering — ACTIVITY_DATE is a DATE field. Use direct date comparisons: ACTIVITY_DATE >= ''2026-04-12'' AND ACTIVITY_DATE <= ''2026-04-18''. Do NOT cast to TIMESTAMP. For relative weeks ("this week", "last week"), do NOT use DATE_TRUNC(''week'') or DAYOFWEEK() — they produce Monday-based weeks. Use the Sunday–Saturday DAYOFWEEKISO formula from rule 2 WEEK CONVENTION. Example for "this week": ACTIVITY_DATE >= DATEADD(''day'', -MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE()) AND ACTIVITY_DATE < DATEADD(''day'', 7 - MOD(DAYOFWEEKISO(CURRENT_DATE()), 7), CURRENT_DATE()).
     45. TASK URGENCY PRIORITIZATION — When asked about "urgent deals", "what needs attention", "priority opportunities", "next actions", "what should I work on", or any prioritization question, use TASK_URGENCY as the PRIMARY urgency signal. Order by task urgency: Overdue first (highest priority), then Due Today, then Next 7 Days. Close date is a SECONDARY consideration — only use it as a tiebreaker within the same urgency tier. For aggregate views, use activity_metrics.TASK_URGENCY. For scored deals, use deal_health.TASK_URGENCY. Example: ORDER BY CASE WHEN activity_metrics.TASK_URGENCY = ''Overdue'' THEN 1 WHEN activity_metrics.TASK_URGENCY = ''Due Today'' THEN 2 WHEN activity_metrics.TASK_URGENCY = ''Next 7 Days'' THEN 3 WHEN activity_metrics.TASK_URGENCY = ''Later'' THEN 4 ELSE 5 END, activity_metrics.NEXT_TASK_DATE ASC NULLS LAST.
     46. When asked about overdue tasks at the opportunity level (aggregated counts, which deals have overdue tasks), use ACTIVITY_METRICS.OVERDUE_TASK_COUNT and ACTIVITY_METRICS.TASK_URGENCY. When asked about individual overdue tasks (list each task), use SALESFORCE_TASKS with filter ACTIVITY_DATE < CURRENT_DATE() AND IS_CLOSED = FALSE.
   '

@@ -69,7 +69,7 @@ TSK_ENRICH_NEW_EMAILS (root, 120-min schedule, SYSTEM$STREAM_HAS_DATA guard, LIM
 ├── TSK_REFRESH_CUSTOMER_360 (grandchild, pure SQL)
 ├── TSK_REFRESH_EMAIL_ANALYTICS (grandchild, pure SQL, once-daily timestamp check)
 ├── TSK_REFRESH_CALL_ACTIVITY (child, pure SQL, once-daily timestamp check)
-└── TSK_REFRESH_DIM_ACTIVITY_SUMMARY (STANDALONE, pure SQL, 30-min schedule, rebuilds only when V_FACT_ACTIVITIES loads new data via SOURCE_WATERMARK guard — no longer a child of the root DAG)
+└── TSK_REFRESH_DIM_ACTIVITY_SUMMARY (STANDALONE, pure SQL, 30-min schedule, unconditional full rebuild each run ~2-3s — no longer a child of the root DAG)
 ```
 
 **Critical**: When modifying any task in the DAG, the root task (`TSK_ENRICH_NEW_EMAILS`) must be suspended first, then the child task modified, then the root task resumed.
@@ -165,7 +165,7 @@ Rep-to-user mapping is maintained in `T_TICKET_TEAM_DEPARTMENT_MAPPING`. Rep pro
 | `T_CUSTOMER_360` | 26 hours | Runs after activity metrics |
 | `T_EMAIL_ANALYTICS` | 48 hours | Once-daily rebuild |
 | `T_CALL_ACTIVITY` | 48 hours | Once-daily incremental |
-| `T_DIM_ACTIVITY_SUMMARY` | 3 hours | 30-min standalone refresh, rebuilds only when V_FACT_ACTIVITIES loads new data (SOURCE_WATERMARK guard) |
+| `T_DIM_ACTIVITY_SUMMARY` | 3 hours | 30-min standalone refresh, unconditional full rebuild each run (~2-3s pure SQL) |
 
 ### Emergency Recovery Playbook
 
